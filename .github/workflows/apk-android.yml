@@ -17,8 +17,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 concurrency:
   group: apk-${{ github.ref }}
@@ -60,7 +58,3 @@ jobs:
           git add dist/test-cap.apk
           git commit -m "APK de prueba compilado" || exit 0
           for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done
-
-  publicar:
-    needs: apk
-    uses: ./.github/workflows/publicar-web.yml
