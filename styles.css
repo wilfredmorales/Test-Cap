@@ -299,6 +299,12 @@ button.option:hover:not(:disabled) { border-color: var(--primary); }
 .user-name { font-weight: 700; }
 .user-tags { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .user-actions { grid-column: 2 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
+.version-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 14px; align-items: start;
+  padding: 14px 0; border-bottom: 1px solid var(--border); }
+.version-row:last-child { border-bottom: 0; }
+.version-row .user-actions { grid-column: 1 / -1; }
+.txt-ok { color: var(--ok); font-weight: 700; }
+.txt-bad { color: var(--bad); font-weight: 700; }
 .steps { padding-left: 20px; margin: 0 0 16px; display: grid; gap: 6px; }
 
 /* ---- capas ---- */

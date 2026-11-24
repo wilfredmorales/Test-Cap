@@ -283,7 +283,8 @@ async function hashTexto(s) {
   } catch { return 'local-' + Date.now(); }
 }
 
-async function importarZip(file) {
+/** Lee y valida el ZIP oficial. No cambia el banco del dispositivo. */
+async function leerZip(file) {
   if (!window.JSZip) throw new Error('No se pudo cargar el lector de ZIP');
   const zip = await JSZip.loadAsync(file);
   const objetivos = [], preguntas = [], problemas = [];
@@ -310,7 +311,7 @@ async function importarZip(file) {
     generado: new Date().toISOString(), fuente: file.name, total: preguntas.length,
     secciones: banco.secciones, objetivos, preguntas,
   };
-  return aplicarBanco(nuevo, 'ZIP importado');
+  return nuevo;
 }
 
 /* ---------- cuentas (Supabase Auth) ---------- */
@@ -1120,15 +1121,7 @@ function pantallaPerfil() {
 
 /* ---------- administración ---------- */
 
-async function llamarAdmin(body) {
-  const { data, error } = await sb.functions.invoke('admin-usuarios', { body });
-  if (error) {
-    let msg = error.message;
-    try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch { /* sin cuerpo */ }
-    throw new Error(msg);
-  }
-  return data;
-}
+const llamarAdmin = body => llamarFuncion('admin-usuarios', body);
 
 function pantallaAdmin(pestana = 'resumen') {
   if (!perfil || perfil.rol !== 'admin') return pantallaInicio();
@@ -1246,46 +1239,165 @@ async function adminResultados(cont) {
   cont.replaceChildren(h('section', { class: 'card' }, h('h2', {}, 'Últimos 100 tests'), tablaResultados(data, true)));
 }
 
-function adminBanco(cont) {
-  const cambio = lsGet('cap.banco.ultimoCambio', null);
+function pedirTexto(mensaje, esperado) {
+  return new Promise(resolve => {
+    const input = h('input', { id: 'confirmar-texto', type: 'text', autocomplete: 'off', placeholder: esperado });
+    const cerrar = v => { capa.remove(); resolve(v); };
+    const capa = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' },
+      h('div', { class: 'card modal-card' },
+        h('p', {}, mensaje),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, `Escribe ${esperado} para confirmar`), h('span', { class: 'field-input' }, input)),
+        h('div', { class: 'row end' },
+          h('button', { class: 'btn', type: 'button', onclick: () => cerrar(false) }, 'Cancelar'),
+          h('button', { class: 'btn danger-solid', type: 'button', onclick: () => cerrar(input.value.trim().toUpperCase() === esperado) }, 'Publicar'))));
+    document.body.append(capa);
+    input.focus();
+  });
+}
+
+function archivoBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+
+async function llamarFuncion(nombre, body) {
+  const { data, error } = await sb.functions.invoke(nombre, { body });
+  if (error) {
+    let msg = error.message;
+    try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch { /* sin cuerpo */ }
+    throw new Error(msg);
+  }
+  return data;
+}
+
+const ESTADO_VERSION = { publicada: ['pill-ok', 'Publicada'], publicando: ['pill-admin', 'Publicando…'], fallida: ['pill-bad', 'Fallida'] };
+
+let sondeoBanco = null;
+async function adminBanco(cont) {
+  clearTimeout(sondeoBanco);
+  const zonaCandidato = h('div');
+  const zonaVersiones = h('div', {}, h('p', { class: 'muted' }, 'Cargando versiones…'));
   const input = h('input', {
     type: 'file', accept: '.zip,application/zip', class: 'hidden',
     onchange: async e => {
       const f = e.target.files[0]; e.target.value = '';
       if (!f) return;
-      toast('Leyendo ZIP…');
-      try { const diff = await importarZip(f); toast(`ZIP válido: ${banco.total} preguntas (${resumenCambios(diff)}).`, 6000); adminBanco(cont); }
-      catch (err) { toast(err.message, 8000); }
+      zonaCandidato.replaceChildren(h('section', { class: 'card' }, h('p', { class: 'muted' }, `Leyendo y validando ${f.name}…`)));
+      try { mostrarCandidato(f, await leerZip(f)); }
+      catch (err) { zonaCandidato.replaceChildren(h('section', { class: 'card' }, aviso('error', 'No se puede publicar: ' + err.message))); }
     },
   });
+
+  function mostrarCandidato(file, nuevo) {
+    const diff = compararBancos(banco, nuevo);
+    const riesgo = (diff.eliminadas + diff.cambiaRespuesta) / Math.max(1, banco.total);
+    const igual = nuevo.version === banco.version;
+    const fila = (t, v, cls = '') => h('tr', {}, h('td', {}, t), h('td', { class: 'num ' + cls }, v.toLocaleString('es-ES')));
+    const btnPub = h('button', { class: 'btn primary', type: 'button', disabled: igual }, 'Publicar para todos');
+    btnPub.addEventListener('click', async () => {
+      const ok = riesgo > 0.10
+        ? await pedirTexto(`Este banco elimina o cambia la respuesta de ${diff.eliminadas + diff.cambiaRespuesta} preguntas (${fmt(riesgo * 100)} %). Es un cambio grande: revisa que el ZIP sea el correcto.`, 'PUBLICAR')
+        : await confirmar(`¿Publicar este banco (${nuevo.total.toLocaleString('es-ES')} preguntas) para todos los usuarios?`, 'Publicar');
+      if (!ok) return;
+      botonCargando(btnPub, true, 'Publicando…');
+      try {
+        await llamarFuncion('publicar-banco', {
+          accion: 'publicar', zip: await archivoBase64(file), version: nuevo.version,
+          total: nuevo.total, fechaFuente: nuevo.fechaFuente, cambios: diff,
+        });
+        toast('Banco enviado. GitHub lo publicará en unos minutos.', 6000);
+        zonaCandidato.replaceChildren();
+        cargarVersiones();
+      } catch (err) { toast(err.message, 8000); botonCargando(btnPub, false); }
+    });
+    zonaCandidato.replaceChildren(h('section', { class: 'card card-accent' },
+      h('div', { class: 'spread' }, h('h2', {}, 'ZIP validado'), h('span', { class: 'pill pill-ok' }, 'Sin errores')),
+      h('p', { class: 'muted small' }, `${file.name} · fuente del ${fechaES(nuevo.fechaFuente)} · versión ${nuevo.version}`),
+      igual ? aviso('info', 'Este ZIP tiene exactamente las mismas preguntas que el banco actual. No hay nada que publicar.') : null,
+      riesgo > 0.10 ? aviso('error', `Atención: cambio grande (${fmt(riesgo * 100)} % de preguntas eliminadas o con otra respuesta).`) : null,
+      h('div', { class: 'table-wrap' }, h('table', { class: 'table' }, h('tbody', {},
+        fila('Preguntas en el ZIP', nuevo.total),
+        fila('Nuevas', diff.nuevas, diff.nuevas ? 'txt-ok' : ''),
+        fila('Eliminadas', diff.eliminadas, diff.eliminadas ? 'txt-bad' : ''),
+        fila('Con la respuesta cambiada', diff.cambiaRespuesta, diff.cambiaRespuesta ? 'txt-bad' : ''),
+        fila('Con el texto corregido', diff.cambiaTexto)))),
+      h('div', { class: 'row end' },
+        h('button', { class: 'btn', type: 'button', onclick: () => zonaCandidato.replaceChildren() }, 'Cancelar'), btnPub)));
+  }
+
+  async function cargarVersiones() {
+    clearTimeout(sondeoBanco);
+    let { data, error } = await sb.from('banco_versiones')
+      .select('id, version, archivo, fecha_fuente, total, cambios, estado, mensaje, creado, perfiles(nombre, email)')
+      .order('creado', { ascending: false }).limit(20);
+    if (error) { zonaVersiones.replaceChildren(aviso('error', traducirError(error))); return; }
+    if (data.some(v => v.estado === 'publicando')) {
+      try { await llamarFuncion('publicar-banco', { accion: 'comprobar' }); } catch { /* se reintenta */ }
+      ({ data } = await sb.from('banco_versiones')
+        .select('id, version, archivo, fecha_fuente, total, cambios, estado, mensaje, creado, perfiles(nombre, email)')
+        .order('creado', { ascending: false }).limit(20));
+    }
+    const activa = data.find(v => v.estado === 'publicada');
+    zonaVersiones.replaceChildren(
+      h('div', { class: 'spread' }, h('h2', {}, 'Versiones publicadas'), h('span', { class: 'muted small' }, 'Las 20 últimas')),
+      ...data.map(v => {
+        const [cls, txt] = ESTADO_VERSION[v.estado] || ['', v.estado];
+        const c = v.cambios || {};
+        const resumen = c.restaurada_desde ? `Vuelta a la versión #${c.restaurada_desde}`
+          : ('nuevas' in c) ? resumenCambios(c) : '';
+        const esActiva = activa && v.id === activa.id;
+        return h('div', { class: 'version-row' },
+          h('div', { class: 'user-main' },
+            h('div', { class: 'user-name' }, `#${v.id} · ${v.total.toLocaleString('es-ES')} preguntas`,
+              esActiva ? h('span', { class: 'pill pill-ok', style: 'margin-left:8px' }, 'Activa') : null),
+            h('div', { class: 'muted small' }, `Fuente del ${fechaES(v.fecha_fuente)} · versión `, h('span', { class: 'mono' }, v.version)),
+            h('div', { class: 'muted small' }, `${fechaES(v.creado, true)}${v.perfiles ? ' · ' + (v.perfiles.nombre || v.perfiles.email) : ''}`),
+            resumen ? h('div', { class: 'small' }, resumen) : null,
+            v.mensaje ? h('div', { class: 'muted small' }, v.mensaje) : null),
+          h('div', { class: 'user-tags' }, h('span', { class: 'pill ' + cls }, txt)),
+          v.estado === 'publicada' && !esActiva && activa && v.version !== activa.version
+            ? h('div', { class: 'user-actions' }, h('button', {
+              class: 'btn sm', type: 'button',
+              onclick: async () => {
+                if (!(await confirmar(`¿Volver a la versión #${v.id} (${v.total} preguntas)? Todos los usuarios la recibirán en unos minutos.`, 'Volver a esta versión'))) return;
+                try { await llamarFuncion('publicar-banco', { accion: 'activar', id: v.id }); toast('Enviado. GitHub la publicará en unos minutos.'); cargarVersiones(); }
+                catch (err) { toast(err.message, 8000); }
+              },
+            }, 'Volver a esta versión')) : null);
+      }));
+    // Mientras haya una publicación en curso, se comprueba cada 30 s (solo con esta pantalla abierta).
+    if (data.some(v => v.estado === 'publicando') && zonaVersiones.isConnected) {
+      sondeoBanco = setTimeout(() => { if (zonaVersiones.isConnected) cargarVersiones(); }, 30000);
+    }
+  }
+
   const btnAct = h('button', {
     class: 'btn', type: 'button',
     onclick: async () => { botonCargando(btnAct, true, 'Buscando…'); await buscarActualizacion(); botonCargando(btnAct, false); adminBanco(cont); },
-  }, 'Buscar actualización');
-  const porSeccion = Object.entries(banco.secciones).map(([s, nombre]) => {
-    const n = banco.objetivos.filter(o => o.seccion === s).reduce((a, o) => a + o.n, 0);
-    return h('tr', {}, h('td', {}, `Sección ${s}`), h('td', {}, nombre), h('td', { class: 'num' }, n.toLocaleString('es-ES')));
-  });
+  }, 'Actualizar este dispositivo');
+
   cont.replaceChildren(
     h('section', { class: 'card' },
-      h('h2', {}, 'Versión publicada'),
+      h('h2', {}, 'Banco en este dispositivo'),
       h('div', { class: 'stats' },
         h('div', { class: 'stat' }, h('div', { class: 'stat-num' }, banco.total.toLocaleString('es-ES')), h('div', { class: 'stat-label' }, 'Preguntas')),
         h('div', { class: 'stat' }, h('div', { class: 'stat-num sm' }, fechaES(banco.fechaFuente)), h('div', { class: 'stat-label' }, 'Fecha de la fuente')),
         h('div', { class: 'stat' }, h('div', { class: 'stat-num sm mono' }, banco.version), h('div', { class: 'stat-label' }, 'Versión'))),
-      cambio ? h('p', { class: 'muted small' }, `Último cambio en este dispositivo (${cambio.origen}, ${fechaES(cambio.fecha)}): ${resumenCambios(cambio.diff)}.`) : null,
-      h('div', { class: 'table-wrap' }, h('table', { class: 'table' }, h('tbody', {}, porSeccion)))),
+      h('div', { class: 'row' }, btnAct)),
     h('section', { class: 'card' },
-      h('h2', {}, 'Publicar un banco nuevo para todos'),
+      h('h2', {}, 'Publicar un banco nuevo'),
       h('ol', { class: 'steps' },
-        h('li', {}, 'Descarga el ZIP de preguntas (.txt) que publica el Ministerio.'),
-        h('li', {}, 'Compruébalo aquí con "Validar ZIP": la app revisa todas las preguntas antes de publicar.'),
-        h('li', {}, 'Súbelo a la carpeta fuentes del repositorio. El banco se regenera solo y todos los usuarios lo reciben al abrir la app.')),
-      h('div', { class: 'row' },
-        h('button', { class: 'btn', type: 'button', onclick: () => input.click() }, 'Validar ZIP'),
-        h('a', { class: 'btn primary', href: SUBIR_ZIP_URL, target: '_blank', rel: 'noopener' }, 'Subir ZIP al repositorio'),
-        btnAct, input),
-      h('p', { class: 'muted small' }, 'Validar un ZIP lo carga solo en este dispositivo; no cambia el banco de los demás.')));
+        h('li', {}, 'Descarga el ZIP de preguntas en .txt que publica el Ministerio.'),
+        h('li', {}, 'Súbelo aquí: la app comprueba todas las preguntas y te enseña qué cambia.'),
+        h('li', {}, 'Pulsa "Publicar para todos". En unos minutos todos los usuarios lo reciben al abrir la app.')),
+      h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => input.click() }, 'Subir ZIP'), input)),
+    zonaCandidato,
+    h('section', { class: 'card' }, zonaVersiones));
+  cargarVersiones();
 }
 
 /* ---------- arranque ---------- */

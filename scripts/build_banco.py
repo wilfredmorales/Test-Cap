@@ -65,8 +65,17 @@ def leer_zip(ruta):
 
 
 def main():
+    activo = RAIZ / "fuentes" / "ACTIVO.txt"
     if len(sys.argv) > 1:
         zip_path = Path(sys.argv[1])
+    elif activo.exists() and activo.read_text(encoding="utf-8").strip():
+        # El ZIP activo lo elige el administrador desde la app (publicar o volver a una versión).
+        nombre = activo.read_text(encoding="utf-8").strip()
+        if "/" in nombre or "\\" in nombre or not nombre.lower().endswith(".zip"):
+            sys.exit(f"ACTIVO.txt no válido: {nombre!r}")
+        zip_path = RAIZ / "fuentes" / nombre
+        if not zip_path.exists():
+            sys.exit(f"ACTIVO.txt apunta a un ZIP que no existe: {nombre}")
     else:
         # El más reciente según la fecha de los .txt de dentro (la fecha del archivo
         # en disco no sirve: en un checkout de git todos tienen la misma).
