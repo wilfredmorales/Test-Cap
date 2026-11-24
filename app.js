@@ -730,8 +730,10 @@ function tarjetaInstalar() {
   try { incrustada = window.self !== window.top; } catch { incrustada = true; }
   if (standalone || incrustada || window.Capacitor) return null;
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const android = /android/i.test(navigator.userAgent);
   return h('section', { class: 'card card-soft' },
     h('h2', {}, 'Instala la app'),
+    android ? h('p', { class: 'small' }, h('a', { class: 'btn', href: 'dist/test-cap.apk', download: 'test-cap.apk' }, 'Descargar la app para Android (APK)')) : null,
     ios
       ? h('p', { class: 'small' }, 'En Safari, pulsa Compartir y después "Añadir a pantalla de inicio".')
       : installPrompt
