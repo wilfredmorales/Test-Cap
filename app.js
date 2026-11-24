@@ -19,6 +19,11 @@ const TIPOS = {
 const PUNTUACION_DEFECTO = { correcta: 1, incorrecta: -0.5, blanco: 0, aprobado: 50 };
 const LS = { prefs: 'cap.prefs', stats: 'cap.stats', session: 'cap.session' };
 
+// Dónde buscar actualizaciones del banco. En la web, junto a la app; en la app instalada
+// (APK), en el repositorio de GitHub, que permite leerlo desde cualquier sitio.
+const DATOS_REMOTOS = 'https://raw.githubusercontent.com/wilfredmorales/Test-Cap/claude/testcat-repo-review-540xv2/data/';
+const urlDatos = archivo => (window.Capacitor ? DATOS_REMOTOS : 'data/') + archivo;
+
 let banco = null;          // { version, fechaFuente, objetivos, preguntas, ... }
 let porCodigo = new Map(); // cod -> pregunta
 let session = null;        // test en curso
@@ -57,6 +62,21 @@ function toast(msg, ms = 3500) {
   t.classList.remove('hidden');
   clearTimeout(toast._t);
   toast._t = setTimeout(() => t.classList.add('hidden'), ms);
+}
+
+/** Diálogo de confirmación propio (window.confirm no funciona en todas las vistas). */
+function confirmar(mensaje, aceptar = 'Sí', cancelar = 'Cancelar') {
+  return new Promise(resolve => {
+    const cerrar = v => { capa.remove(); resolve(v); };
+    const btnOk = h('button', { class: 'btn primary', type: 'button', onclick: () => cerrar(true) }, aceptar);
+    const capa = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', onclick: e => { if (e.target === capa) cerrar(false); } },
+      h('div', { class: 'card' },
+        h('p', {}, mensaje),
+        h('div', { class: 'row end' },
+          h('button', { class: 'btn', type: 'button', onclick: () => cerrar(false) }, cancelar), btnOk)));
+    document.body.append(capa);
+    btnOk.focus();
+  });
 }
 
 function lsGet(key, fallback) {
@@ -176,14 +196,14 @@ async function buscarActualizacion({ silencioso = false } = {}) {
     return;
   }
   try {
-    const v = await (await fetch('data/version.json', { cache: 'no-store' })).json();
+    const v = await (await fetch(urlDatos('version.json'), { cache: 'no-store' })).json();
     if (v.version === banco.version) {
       if (!silencioso) toast('✅ Ya tienes la última versión del banco.');
       return;
     }
     // No sustituir un banco importado más reciente por uno publicado más antiguo.
     if (silencioso && banco.fechaFuente && v.fechaFuente && v.fechaFuente < banco.fechaFuente) return;
-    const res = await fetch('data/banco-cap.json?v=' + encodeURIComponent(v.version), { cache: 'no-store' });
+    const res = await fetch(urlDatos('banco-cap.json') + '?v=' + encodeURIComponent(v.version), { cache: 'no-store' });
     const nuevo = await res.json();
     if (!nuevo.preguntas || nuevo.preguntas.length < 100) throw new Error('banco recibido incompleto');
     const diff = await aplicarBanco(nuevo, 'actualización');
@@ -408,7 +428,9 @@ function tarjetaBanco() {
 
 function tarjetaInstalar() {
   const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
-  if (standalone) return null;
+  let incrustada = false;
+  try { incrustada = window.self !== window.top; } catch { incrustada = true; }
+  if (standalone || incrustada || window.Capacitor) return null;
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) ||
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   return h('div', { class: 'card' },
@@ -632,9 +654,9 @@ function pantallaTest() {
       }))));
 }
 
-function confirmarTerminar() {
+async function confirmarTerminar() {
   const sin = session.ids.length - Object.keys(session.respuestas).length;
-  if (sin > 0 && !confirm(`Te quedan ${sin} preguntas sin responder. ¿Terminar igualmente?`)) return;
+  if (sin > 0 && !(await confirmar(`Te quedan ${sin} preguntas sin responder. ¿Terminar el test?`, 'Terminar'))) return;
   terminarTest();
 }
 
@@ -724,17 +746,20 @@ window.addEventListener('beforeinstallprompt', e => {
   if (!session || session.terminado) pantallaInicio();
 });
 
-document.getElementById('btn-home').addEventListener('click', () => {
-  if (session && !session.terminado && !confirm('¿Salir al inicio? El test queda guardado para continuar después.')) return;
+document.getElementById('btn-home').addEventListener('click', async () => {
+  if (session && !session.terminado &&
+    !(await confirmar('¿Salir al inicio? El test queda guardado y podrás continuarlo después.', 'Salir'))) return;
   pararTimer();
   session = null;
   pantallaInicio();
 });
 
 async function init() {
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
-  }
+  try {
+    if (!window.Capacitor && 'serviceWorker' in navigator && location.protocol.startsWith('http')) {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
+  } catch { /* sin service worker: la app funciona igual, sin modo offline */ }
   try {
     await cargarBanco();
   } catch (e) {

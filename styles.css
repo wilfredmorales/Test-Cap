@@ -33,12 +33,14 @@
     --warn: #ffc266;
     --warn-bg: #3a2c12;
     --shadow: none;
+    color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #12131c; --surface: #1c1d2a; --surface-2: #262838; --text: #ecedf6; --muted: #a3a6bd;
   --border: #34374b; --primary: #8f8cff; --primary-text: #12131c; --ok: #5fd39a; --ok-bg: #173527;
   --bad: #ff8a95; --bad-bg: #3c1d22; --warn: #ffc266; --warn-bg: #3a2c12; --shadow: none;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -157,6 +159,14 @@ label.field input, label.field select {
 .result-banner.bad { background: var(--bad-bg); color: var(--bad); }
 .notice { padding: 12px; border-radius: 12px; background: var(--warn-bg); color: var(--warn); font-size: .9rem; }
 
+.modal {
+  position: fixed; inset: 0; z-index: 40; display: grid; place-items: center;
+  padding: max(16px, env(safe-area-inset-left, 0px)); background: rgba(10, 10, 30, .45);
+}
+.modal .card { width: min(420px, 100%); }
+.btn:focus-visible, .option:focus-visible, .mode:focus-visible, .segmented button:focus-visible, .palette button:focus-visible {
+  outline: 3px solid var(--primary); outline-offset: 2px;
+}
 .toast {
   position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translateX(-50%);
   max-width: calc(100% - 32px); padding: 12px 16px; border-radius: 12px;
