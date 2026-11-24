@@ -923,21 +923,13 @@ function pantallaTest() {
         h('strong', {}, elegida === q.r ? 'Correcta' : `Incorrecta · la buena es la ${q.r}`),
         q.n ? h('span', { class: 'small' }, `Norma: ${q.n}`) : null) : null,
       session.feedback === 'final' && elegida ? h('p', { class: 'muted small' }, 'Pulsa otra vez tu respuesta para dejarla en blanco.') : null),
-    h('div', { class: 'row end' },
+    h('div', { class: 'row test-nav' },
+      ultima ? null : h('button', { class: 'btn danger', type: 'button', onclick: confirmarTerminar }, 'Terminar test'),
+      h('span', { class: 'grow' }),
       h('button', { class: 'btn', type: 'button', disabled: session.idx === 0, onclick: () => ir(session.idx - 1) }, 'Anterior'),
       ultima
         ? h('button', { class: 'btn primary', type: 'button', onclick: confirmarTerminar }, 'Terminar test')
-        : h('button', { class: 'btn primary', type: 'button', onclick: () => ir(session.idx + 1) }, elegida ? 'Siguiente' : 'Saltar')),
-    h('section', { class: 'card' },
-      h('div', { class: 'spread' }, h('h2', {}, 'Preguntas'),
-        h('button', { class: 'btn danger', type: 'button', onclick: confirmarTerminar }, 'Terminar test')),
-      h('div', { class: 'palette' }, session.ids.map((cc, i) => {
-        const r = session.respuestas[cc];
-        let cls = r ? 'answered' : '';
-        if (r && session.feedback === 'inmediato') cls = r === porCodigo.get(cc).r ? 'correct' : 'wrong';
-        if (i === session.idx) cls += ' current';
-        return h('button', { type: 'button', class: cls, onclick: () => ir(i), 'aria-label': `Pregunta ${i + 1}` }, i + 1);
-      }))));
+        : h('button', { class: 'btn primary', type: 'button', onclick: () => ir(session.idx + 1) }, elegida ? 'Siguiente' : 'Saltar')));
 }
 
 async function confirmarTerminar() {

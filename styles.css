@@ -56,7 +56,8 @@
 }
 
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; background: var(--bg); }
+body { min-height: 100vh; min-height: 100dvh; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
   font: 16px/1.55 var(--font-body);
@@ -251,6 +252,13 @@ button.option:hover:not(:disabled) { border-color: var(--primary); }
   background: var(--surface-2); color: var(--text); }
 .feedback.ok { background: var(--ok-bg); color: var(--ok); }
 .feedback.bad { background: var(--bad-bg); color: var(--bad); }
+.test-nav { margin: 4px 0 16px; }
+.test-nav .grow { flex: 1; }
+@media (max-width: 520px) {
+  .test-nav { display: grid; grid-template-columns: 1fr 1fr; }
+  .test-nav .grow { display: none; }
+  .test-nav .btn.danger { grid-column: 1 / -1; order: 3; }
+}
 .palette { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 6px; }
 .palette button { min-height: 38px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface);
   color: var(--text); font: 600 .82rem var(--font-body); cursor: pointer; font-variant-numeric: tabular-nums; }
