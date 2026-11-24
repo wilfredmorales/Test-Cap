@@ -8,6 +8,7 @@ on:
       - app.js
       - styles.css
       - icons/**
+      - vendor/**
       - package.json
       - capacitor.config.json
       - scripts/iconos_android.py

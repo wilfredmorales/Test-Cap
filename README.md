@@ -4,6 +4,15 @@ App para practicar el examen del **CAP** (Certificado de Aptitud Profesional) co
 de preguntas del Ministerio de Transportes. Se instala en **Android, iPhone y ordenador** como
 aplicación web (PWA), sin tiendas, y funciona sin conexión.
 
+## Cuentas y roles
+
+- Registro libre con correo y contraseña, confirmación por correo y recuperación de contraseña.
+- **Usuario**: hace tests; sus resultados se guardan en su historial (también sin conexión: se envían después).
+- **Administrador**: resumen de uso, gestión de usuarios (buscar, hacer/quitar admin, desactivar,
+  enviar recuperación, eliminar, invitar), últimos resultados y publicación del banco.
+- Servidor: Supabase (proyecto `Test-CAP`). Esquema y reglas de acceso en `supabase/migrations/`,
+  función de administración en `supabase/functions/admin-usuarios/`.
+
 ## Qué hace
 
 - Elegir **Mercancías** o **Viajeros**.

@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Tests del CAP de mercancías y viajeros",
   "scripts": {
-    "www": "rm -rf www && mkdir -p www && cp -r index.html app.js styles.css manifest.webmanifest icons data www/"
+    "www": "rm -rf www && mkdir -p www && cp -r index.html app.js styles.css manifest.webmanifest icons data vendor www/"
   },
   "devDependencies": {
     "@capacitor/android": "6.1.2",

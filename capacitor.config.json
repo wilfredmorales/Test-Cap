@@ -2,5 +2,5 @@
   "appId": "app.testcap.cap",
   "appName": "Test CAP",
   "webDir": "www",
-  "android": { "backgroundColor": "#f5f6fb" }
+  "android": { "backgroundColor": "#0f2347" }
 }

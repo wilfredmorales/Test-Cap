@@ -1,6 +1,6 @@
 # Spec 001 · Usuarios, roles y administración
 
-Estado: **pendiente de aprobación**
+Estado: **aprobada · hitos 1 y 2 implementados (diseño, cuentas, roles, panel de administración, historial)**
 
 ## 1. Objetivo
 
