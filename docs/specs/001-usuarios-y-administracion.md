@@ -86,9 +86,32 @@ plan de pago. **No mezclar** esta app con los proyectos de finanzas: compartirí
 
 Fuera de alcance: pagos, grupos/academias, app nativa de iPhone, notificaciones push.
 
-## 8. Preguntas abiertas
+## 8. Decisiones (respuestas de la persona)
 
-1. ¿Proyecto Supabase nuevo (pausando uno existente o con plan de pago) u otra opción?
-2. ¿Registro libre o solo por invitación del administrador?
-3. ¿Inicio de sesión con correo? (La recuperación de contraseña necesita un correo.)
-4. ¿Cuántos usuarios esperas y la usarán alumnos de una autoescuela o solo tú y conocidos?
+- Registro libre para cualquiera. Inicio de sesión con correo.
+- Miles de usuarios a la vez: tiene que aguantar carga.
+- Se planteó guardar las cuentas solo en el dispositivo: **descartado**, ver abajo.
+
+### Por qué no cuentas guardadas solo en el dispositivo
+
+- El administrador no podría ver ni gestionar usuarios de otros móviles.
+- La recuperación por correo necesita un servidor que envíe el correo.
+- La cuenta no existiría en otro dispositivo ni sobreviviría a borrar la app.
+- La contraseña y el rol se podrían cambiar editando el almacenamiento del móvil.
+
+### Ajustes por la escala (miles de usuarios)
+
+- El banco (3,7 MB; 0,7 MB comprimido) se sirve desde GitHub Pages (CDN), no desde Supabase, para no
+  gastar el tráfico de Supabase: 5.000 descargas serían unos 3,4 GB.
+- Supabase solo para cuentas, perfiles, versiones del banco (metadatos) y resultados.
+- Registro libre a esta escala exige: confirmación de correo, CAPTCHA (Turnstile o hCaptcha)
+  contra registros automáticos, límites de intentos y SMTP propio (Brevo, Resend o similar).
+- Plan Supabase **Pro** recomendado: el gratuito pausa el proyecto tras una semana sin actividad y no
+  tiene copias de seguridad diarias.
+- Publicar banco desde la app: el ZIP validado se sube al repositorio (Edge Function con token de
+  GitHub) y GitHub Pages lo sirve; queda un registro de cada versión en `banco_versiones`.
+
+## 9. Preguntas abiertas
+
+1. ¿Plan Supabase Pro (unos 25 $/mes) para un proyecto nuevo `Test-CAP`?
+2. ¿Qué servicio de correo usamos (hace falta una cuenta y un dominio para el remitente)?
