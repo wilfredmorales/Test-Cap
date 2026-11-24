@@ -1,6 +1,6 @@
 # Spec 002 · Publicar el banco desde la app (etapa 4 de la spec 001)
 
-Estado: **implementada · falta el token de GitHub**
+Estado: **implementada y probada en real (publicar y volver a una versión, 24-11-2026)**
 
 ## Objetivo
 
