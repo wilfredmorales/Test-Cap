@@ -25,8 +25,8 @@ ataques probados (27 de 30 pruebas; las 3 que fallan son H5 y H7). Los riesgos p
 | H5 | Media | PostgreSQL (permisos por defecto) | Crear una tabla nueva sin RLS | La tabla queda legible y escribible por cualquiera con la clave pública | **Corregido 25-11** | Migración 005 |
 | H6 | Media | Auth (contraseñas) | Registro directo por API saltando la validación de la app; contraseñas filtradas | Contraseñas débiles o ya filtradas | Abierto | Configuración de Auth |
 | H7 | Baja | Tabla `resultados` | Insertar resultados propios inventados (nota, fecha) | Historial y estadísticas del admin manipulables | **Mitigado 25-11** (fecha, rangos, 300/día) | Migración 005 |
-| H8 | Baja | Frontend | Sin CSP; sesión en `localStorage` | Si aparece un XSS, robo de la sesión | Abierto | Parche 03 (probado) |
-| H9 | Baja | Edge Functions | Provocar errores 500 | Mensajes internos devueltos al cliente (solo admins) | Abierto | Parche 05 |
+| H8 | Baja | Frontend | Sin CSP; sesión en `localStorage` | Si aparece un XSS, robo de la sesión | **Corregido 25-11** | CSP en `index.html` |
+| H9 | Baja | Edge Functions | Provocar errores 500 | Mensajes internos devueltos al cliente (solo admins) | **Corregido 25-11** | `errorInterno()` en ambas funciones |
 | H10 | Info | Auth (ajustes no visibles) | Cambio de contraseña con sesión robada | Persistencia tras robo de sesión | Sin verificar | Checklist §5 |
 
 No aplica: OAuth/inicio de sesión con GitHub y webhooks (no existen) [V]; Storage (sin buckets) [V];
@@ -166,7 +166,7 @@ activa (registros del 24-11: `email_not_confirmed`) y el redirect usado fue el d
 - [ ] SMTP propio con dominio verificado (SPF, DKIM, DMARC).
 - [ ] Auth: contraseña mínima 8, contraseñas filtradas bloqueadas, Secure email/password change activos.
 - [ ] Redirect URLs exactas: solo `https://wilfredmorales.github.io/Test-Cap/`.
-- [ ] CSP (parche 03) en `index.html`.
+- [x] CSP en `index.html` (25-11-2026), probada con registro, tests, verificación en dos pasos y publicación del banco: 0 bloqueos.
 - [ ] Token `GITHUB_TOKEN_BANCO`: fine-grained, solo `Test-CAP`, solo *Contents: read and write*,
       con fecha de caducidad anotada.
 - [ ] RGPD: aviso de privacidad y forma de borrar la propia cuenta (hoy solo puede hacerlo el admin).

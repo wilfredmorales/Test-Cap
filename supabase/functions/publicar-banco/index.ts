@@ -20,6 +20,13 @@ const respuesta = (status: number, body: unknown) =>
 
 class ErrorUsuario extends Error {}
 
+/** Error inesperado: el detalle va a los registros de Supabase; al cliente, solo una referencia (auditoría H9). */
+function errorInterno(e: unknown) {
+  const ref = crypto.randomUUID().slice(0, 8);
+  console.error(`[${ref}]`, e);
+  return respuesta(500, { error: `Error interno (ref. ${ref}). Inténtalo de nuevo.` });
+}
+
 function github(token: string) {
   return async (ruta: string, init: RequestInit = {}) => {
     const r = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}${ruta}`, {
@@ -173,7 +180,6 @@ Deno.serve(async (req) => {
     return respuesta(400, { error: "Acción desconocida" });
   } catch (e) {
     if (e instanceof ErrorUsuario) return respuesta(400, { error: e.message });
-    console.error(e);
-    return respuesta(500, { error: (e as Error).message });
+    return errorInterno(e);
   }
 });

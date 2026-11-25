@@ -13,6 +13,13 @@ function respuesta(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 }
 
+/** Error inesperado: el detalle va a los registros de Supabase; al cliente, solo una referencia (auditoría H9). */
+function errorInterno(e: unknown) {
+  const ref = crypto.randomUUID().slice(0, 8);
+  console.error(`[${ref}]`, e);
+  return respuesta(500, { error: `Error interno (ref. ${ref}). Inténtalo de nuevo.` });
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return respuesta(405, { error: "Método no permitido" });
@@ -52,7 +59,7 @@ Deno.serve(async (req) => {
         if (error) return respuesta(400, { error: error.message });
         // Bloquea también el inicio de sesión (y renovar la sesión) en Supabase Auth.
         const { error: e2 } = await servicio.auth.admin.updateUserById(id, { ban_duration: activo ? "none" : "876000h" });
-        if (e2) return respuesta(500, { error: e2.message });
+        if (e2) return errorInterno(e2);
         return respuesta(200, { ok: true });
       }
       case "rol": {
@@ -68,7 +75,7 @@ Deno.serve(async (req) => {
         const { data: objetivo } = await servicio.from("perfiles").select("rol").eq("id", id).single();
         if (objetivo?.rol === "admin") return respuesta(400, { error: "Quita primero el rol de administrador" });
         const { error } = await servicio.auth.admin.deleteUser(id);
-        if (error) return respuesta(500, { error: error.message });
+        if (error) return errorInterno(error);
         return respuesta(200, { ok: true });
       }
       case "quitar_mfa": {
@@ -76,12 +83,12 @@ Deno.serve(async (req) => {
         if (!UUID.test(id)) return respuesta(400, { error: "Usuario no válido" });
         if (id === yo) return respuesta(400, { error: "No puedes quitar tu propia verificación desde aquí; hazlo en Mi cuenta" });
         const { data: lista, error: e1 } = await servicio.auth.admin.mfa.listFactors({ userId: id });
-        if (e1) return respuesta(500, { error: e1.message });
+        if (e1) return errorInterno(e1);
         const factores = lista?.factors ?? [];
         if (!factores.length) return respuesta(400, { error: "Este usuario no tiene la verificación en dos pasos activada" });
         for (const f of factores) {
           const { error: e2 } = await servicio.auth.admin.mfa.deleteFactor({ userId: id, id: f.id });
-          if (e2) return respuesta(500, { error: e2.message });
+          if (e2) return errorInterno(e2);
         }
         return respuesta(200, { ok: true, quitados: factores.length });
       }
@@ -98,6 +105,6 @@ Deno.serve(async (req) => {
         return respuesta(400, { error: "Acción desconocida" });
     }
   } catch (e) {
-    return respuesta(500, { error: (e as Error).message });
+    return errorInterno(e);
   }
 });
