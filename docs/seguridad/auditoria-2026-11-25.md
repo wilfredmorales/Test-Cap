@@ -18,10 +18,10 @@ ataques probados (27 de 30 pruebas; las 3 que fallan son H5 y H7). Los riesgos p
 
 | ID | Sev. | Componente | Ataque | Impacto | Estado | Corrección |
 |---|---|---|---|---|---|---|
-| H1 | **Alta** | Actions `apk-android.yml` | Dependencia npm/pip comprometida ejecuta código con permiso de escritura | Código malicioso servido a todos los usuarios (robo de sesiones, incluida la del admin) | Abierto | Parche 04 |
+| H1 | **Alta** | Actions `apk-android.yml` | Dependencia npm/pip comprometida ejecuta código con permiso de escritura | Código malicioso servido a todos los usuarios (robo de sesiones, incluida la del admin) | **Corregido 25-11** | Workflow nuevo (2 jobs) |
 | H2 | **Alta** | Auth / rol admin | Phishing o reutilización de contraseña del admin | Control total: usuarios, correos, banco con respuestas falsas | Abierto | Parche 02 + UI de MFA |
 | H3 | Media | Auth (registro y recuperación abiertos) | Altas y peticiones de correo masivas | Agotar el cupo de correos: nadie confirma ni recupera; cuentas basura | Abierto | CAPTCHA + SMTP propio + límites |
-| H4 | Media | APK | APK de depuración con firma distinta en cada compilación | Sesión extraíble con acceso físico/USB; no se puede verificar autenticidad ni actualizar | Abierto | Parche 04 (firma de publicación) |
+| H4 | Media | APK | APK de depuración con firma distinta en cada compilación | Sesión extraíble con acceso físico/USB; no se puede verificar autenticidad ni actualizar | **Preparado**: falta la clave de firma | Secretos ANDROID_* |
 | H5 | Media | PostgreSQL (permisos por defecto) | Crear una tabla nueva sin RLS | La tabla queda legible y escribible por cualquiera con la clave pública | **Corregido 25-11** | Migración 005 |
 | H6 | Media | Auth (contraseñas) | Registro directo por API saltando la validación de la app; contraseñas filtradas | Contraseñas débiles o ya filtradas | Abierto | Configuración de Auth |
 | H7 | Baja | Tabla `resultados` | Insertar resultados propios inventados (nota, fecha) | Historial y estadísticas del admin manipulables | **Mitigado 25-11** (fecha, rangos, 300/día) | Migración 005 |
@@ -159,7 +159,9 @@ activa (registros del 24-11: `email_not_confirmed`) y el redirect usado fue el d
 - [x] Parche 01 aplicado como migración 005 (25-11-2026): `supabase/tests/seguridad_rls.sql` → 31 PASA, 0 FALLA.
 - [ ] `get_advisors` (security) sin avisos tras cada migración.
 - [ ] MFA activado para todos los admins y parche 02 aplicado después.
-- [ ] Workflow del APK sustituido por el parche 04, con `package-lock.json` y clave de firma en secretos.
+- [x] Workflow del APK sustituido (25-11-2026): compilación sin escritura, `npm ci --ignore-scripts` con lockfile.
+- [ ] Clave de firma de publicación en los secretos ANDROID_* (H4).
+- [ ] Actualizar Capacitor (la CLI 6.1.2 arrastra `tar` 6 y `glob` 9 marcados como obsoletos; solo en compilación, no van dentro del APK).
 - [ ] CAPTCHA (Turnstile) en registro, inicio de sesión y recuperación.
 - [ ] SMTP propio con dominio verificado (SPF, DKIM, DMARC).
 - [ ] Auth: contraseña mínima 8, contraseñas filtradas bloqueadas, Secure email/password change activos.
