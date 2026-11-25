@@ -313,6 +313,10 @@ button.option:hover:not(:disabled) { border-color: var(--primary); }
 .version-row .user-actions { grid-column: 1 / -1; }
 .txt-ok { color: var(--ok); font-weight: 700; }
 .txt-bad { color: var(--bad); font-weight: 700; }
+.clave-totp { font: 600 1rem var(--font-mono); letter-spacing: .06em; padding: 8px 10px; border-radius: 8px;
+  background: var(--surface-2); color: var(--text); word-break: break-all; }
+.qr { display: block; margin: 10px 0; background: #fff; padding: 8px; border-radius: 10px; max-width: 100%; height: auto; }
+details summary { cursor: pointer; color: var(--primary); font-weight: 600; margin: 8px 0; }
 .steps { padding-left: 20px; margin: 0 0 16px; display: grid; gap: 6px; }
 
 /* ---- capas ---- */

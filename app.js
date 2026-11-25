@@ -24,6 +24,9 @@ const TIPOS = {
 const MODOS = { examen: 'Simulacro', ampliacion: 'Ampliación', temas: 'Práctica por temas', falladas: 'Repaso de falladas' };
 const PUNTUACION_DEFECTO = { correcta: 1, incorrecta: -0.5, blanco: 0, aprobado: 50 };
 
+// Fase B de la verificación en dos pasos (spec 003): el panel exige una sesión verificada (aal2).
+const MFA_OBLIGATORIA_ADMIN = false;
+
 const urlDatos = archivo => (window.Capacitor ? DATOS_REMOTOS : 'data/') + archivo;
 const redirectApp = () =>
   (!window.Capacitor && /^https?:$/.test(location.protocol) && !/^(localhost|127\.)/.test(location.hostname))
@@ -320,6 +323,8 @@ function traducirError(e) {
   const m = (e && (e.message || e.error_description || e.error)) || String(e);
   const tabla = [
     [/invalid login credentials/i, 'Correo o contraseña incorrectos.'],
+    [/invalid totp|totp code|mfa_verification|code.*(invalid|expired)/i, 'Código incorrecto o caducado. Escribe el código que muestra ahora tu app de autenticación.'],
+    [/aal2|assurance level/i, 'Esta acción necesita la verificación en dos pasos. Vuelve a iniciar sesión.'],
     [/email not confirmed/i, 'Aún no has confirmado tu correo. Revisa tu bandeja de entrada (y la de spam).'],
     [/user (is )?banned/i, 'Esta cuenta está desactivada. Contacta con el administrador.'],
     [/already registered|already been registered/i, 'Ya existe una cuenta con ese correo. Inicia sesión o recupera la contraseña.'],
@@ -356,6 +361,14 @@ async function cargarPerfil() {
 
 async function entrarConSesion(s) {
   usuario = { id: s.user.id, email: s.user.email };
+  const aal = await nivelVerificacion();
+  if (aal.nextLevel === 'aal2' && aal.currentLevel !== 'aal2') {
+    pantallaCodigoMfa(async () => {
+      const { data } = await sb.auth.getSession();
+      if (data.session) await entrarConSesion(data.session); else pantallaLogin();
+    });
+    return;
+  }
   try {
     await cargarPerfil();
   } catch (e) {
@@ -381,6 +394,145 @@ async function cerrarSesion() {
   usuario = null; perfil = null;
   try { await sb.auth.signOut(); } catch { /* sin conexión: se borra la sesión local igualmente */ }
   pantallaLogin({ info: 'Has cerrado sesión.' });
+}
+
+/* ---------- verificación en dos pasos (TOTP) ---------- */
+
+async function nivelVerificacion() {
+  try { const { data } = await sb.auth.mfa.getAuthenticatorAssuranceLevel(); return data || {}; } catch { return {}; }
+}
+
+async function factoresTotp() {
+  const { data, error } = await sb.auth.mfa.listFactors();
+  if (error) throw error;
+  return { verificados: data.totp || [], todos: data.all || [] };
+}
+
+/** Pide el código de 6 dígitos y, si es correcto, sigue con `continuar`. */
+function pantallaCodigoMfa(continuar) {
+  pararTimer();
+  const btn = h('button', { class: 'btn primary block', type: 'submit' }, 'Verificar');
+  const zonaAviso = h('div');
+  const form = h('form', {
+    class: 'form', novalidate: true,
+    onsubmit: async e => {
+      e.preventDefault();
+      const codigo = form.codigo.value.replace(/\s/g, '');
+      if (!/^\d{6}$/.test(codigo)) { zonaAviso.replaceChildren(aviso('error', 'El código tiene 6 números.')); return; }
+      botonCargando(btn, true, 'Verificando…');
+      try {
+        const { verificados } = await factoresTotp();
+        if (!verificados.length) { await continuar(); return; }
+        const { error } = await sb.auth.mfa.challengeAndVerify({ factorId: verificados[0].id, code: codigo });
+        if (error) throw error;
+        await continuar();
+      } catch (err) {
+        botonCargando(btn, false);
+        form.codigo.value = '';
+        zonaAviso.replaceChildren(aviso('error', traducirError(err)));
+      }
+    },
+  },
+  zonaAviso,
+  campo('codigo', 'Código de 6 dígitos', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 7, pattern: '[0-9 ]*', required: true }),
+  btn);
+  render(marcoAcceso('Verificación en dos pasos', 'Abre tu app de autenticación y escribe el código de Test CAP.',
+    form,
+    h('p', { class: 'auth-alt' },
+      h('button', { class: 'btn link', type: 'button', onclick: cerrarSesion }, 'Cerrar sesión'))));
+  setTimeout(() => form.codigo && form.codigo.focus(), 50);
+}
+
+/** Tarjeta de "Mi cuenta" para activar o desactivar la verificación. */
+async function seccionMfa(zona) {
+  zona.replaceChildren(h('p', { class: 'muted small' }, 'Comprobando…'));
+  let f;
+  try { f = await factoresTotp(); } catch (e) { zona.replaceChildren(aviso('error', traducirError(e))); return; }
+  const esAdmin = perfil && perfil.rol === 'admin';
+  if (f.verificados.length) {
+    const factor = f.verificados[0];
+    const btn = h('button', { class: 'btn danger', type: 'button' }, 'Desactivar');
+    btn.addEventListener('click', async () => {
+      const texto = esAdmin && MFA_OBLIGATORIA_ADMIN
+        ? '¿Desactivar la verificación en dos pasos? Perderás el acceso al panel de administración hasta que la vuelvas a activar.'
+        : '¿Desactivar la verificación en dos pasos? Tu cuenta quedará protegida solo con la contraseña.';
+      if (!(await confirmar(texto, 'Desactivar', 'Cancelar', true))) return;
+      botonCargando(btn, true);
+      const { error } = await sb.auth.mfa.unenroll({ factorId: factor.id });
+      if (error) { botonCargando(btn, false); toast(traducirError(error), 6000); return; }
+      await sb.auth.refreshSession().catch(() => {});
+      toast('Verificación en dos pasos desactivada.');
+      seccionMfa(zona);
+    });
+    zona.replaceChildren(
+      h('div', { class: 'spread' },
+        h('div', {}, h('span', { class: 'pill pill-ok' }, 'Activada'),
+          h('p', { class: 'muted small', style: 'margin-top:8px' }, `Desde el ${fechaES(factor.created_at)}. Al iniciar sesión se pide el código de tu app de autenticación.`)),
+        btn));
+    return;
+  }
+  const btn = h('button', { class: 'btn primary', type: 'button' }, 'Activar');
+  btn.addEventListener('click', () => activarMfa(zona, f.todos));
+  zona.replaceChildren(
+    esAdmin ? aviso('info', 'Como administrador, te recomendamos activarla: protege el panel aunque alguien consiga tu contraseña.') : null,
+    h('p', { class: 'small' }, 'Además de la contraseña, al entrar se pedirá un código de 6 números que cambia cada 30 segundos en una app de autenticación (Google Authenticator, Microsoft Authenticator o Aegis).'),
+    h('div', { class: 'row' }, btn));
+}
+
+async function activarMfa(zona, todos) {
+  zona.replaceChildren(h('p', { class: 'muted small' }, 'Preparando…'));
+  // Un intento anterior sin terminar deja un factor "unverified": se borra antes de empezar.
+  for (const f of todos.filter(x => x.status !== 'verified')) await sb.auth.mfa.unenroll({ factorId: f.id }).catch(() => {});
+  const { data, error } = await sb.auth.mfa.enroll({ factorType: 'totp', friendlyName: 'App de autenticación' });
+  if (error) { zona.replaceChildren(aviso('error', traducirError(error))); return; }
+  const { id, totp } = data;
+  const claveLegible = totp.secret.replace(/(.{4})/g, '$1 ').trim();
+  const claveTxt = h('code', { class: 'clave-totp' }, claveLegible);
+  const btnCopiar = h('button', { class: 'btn sm', type: 'button' }, 'Copiar clave');
+  btnCopiar.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(totp.secret); toast('Clave copiada.'); }
+    catch {
+      const r = document.createRange(); r.selectNodeContents(claveTxt);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      toast('Mantén pulsado para copiar la clave seleccionada.');
+    }
+  });
+  const btnVerif = h('button', { class: 'btn primary', type: 'submit' }, 'Activar');
+  const zonaAviso = h('div');
+  const form = h('form', {
+    class: 'form', novalidate: true,
+    onsubmit: async e => {
+      e.preventDefault();
+      const codigo = form.codigo.value.replace(/\s/g, '');
+      if (!/^\d{6}$/.test(codigo)) { zonaAviso.replaceChildren(aviso('error', 'El código tiene 6 números.')); return; }
+      botonCargando(btnVerif, true, 'Comprobando…');
+      const { error: err } = await sb.auth.mfa.challengeAndVerify({ factorId: id, code: codigo });
+      if (err) { botonCargando(btnVerif, false); zonaAviso.replaceChildren(aviso('error', traducirError(err))); return; }
+      toast('Verificación en dos pasos activada.', 5000);
+      seccionMfa(zona);
+    },
+  }, zonaAviso,
+  campo('codigo', 'Código que muestra la app', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 7, pattern: '[0-9 ]*' }),
+  h('div', { class: 'row end' },
+    h('button', {
+      class: 'btn', type: 'button',
+      onclick: async () => { await sb.auth.mfa.unenroll({ factorId: id }).catch(() => {}); seccionMfa(zona); },
+    }, 'Cancelar'),
+    btnVerif));
+
+  zona.replaceChildren(
+    h('ol', { class: 'steps' },
+      h('li', {}, 'Instala una app de autenticación si no tienes ninguna: Google Authenticator, Microsoft Authenticator o Aegis.'),
+      h('li', {}, 'Añade Test CAP a la app:',
+        h('div', { class: 'row', style: 'margin:8px 0' },
+          h('a', { class: 'btn', href: totp.uri }, 'Abrir en la app de autenticación')),
+        h('div', { class: 'small muted' }, 'Si el botón no abre la app, añade la cuenta a mano con esta clave:'),
+        h('div', { class: 'row', style: 'margin-top:6px' }, claveTxt, btnCopiar)),
+      h('li', {}, 'Guarda la clave en un lugar seguro: te servirá si cambias de móvil.'),
+      h('li', {}, 'Escribe el código de 6 números que aparece en la app.')),
+    h('details', { class: 'small' }, h('summary', {}, 'Tengo la app en otro dispositivo (código QR)'),
+      h('img', { class: 'qr', src: totp.qr_code, alt: 'Código QR para la app de autenticación', width: 180, height: 180 })),
+    form);
 }
 
 /* ---------- pantallas de acceso ---------- */
@@ -1065,6 +1217,8 @@ async function pantallaHistorial() {
 
 function pantallaPerfil() {
   const zona1 = h('div'), zona2 = h('div');
+  const zonaMfa = h('div');
+  setTimeout(() => seccionMfa(zonaMfa), 0);
   const btn1 = h('button', { class: 'btn primary', type: 'submit' }, 'Guardar nombre');
   const f1 = h('form', {
     class: 'form', novalidate: true,
@@ -1106,6 +1260,7 @@ function pantallaPerfil() {
       h('p', { class: 'muted' }, usuario.email, perfil.rol === 'admin' ? ' · Administrador' : '')),
     h('section', { class: 'card' }, h('h2', {}, 'Datos'), f1),
     h('section', { class: 'card' }, h('h2', {}, 'Contraseña'), f2),
+    h('section', { class: 'card' }, h('h2', {}, 'Verificación en dos pasos'), zonaMfa),
     h('section', { class: 'card' }, h('h2', {}, 'Sesión'),
       h('p', { class: 'muted small' }, 'Cierra la sesión en este dispositivo.'),
       h('button', { class: 'btn danger', type: 'button', onclick: cerrarSesion }, 'Cerrar sesión')));
@@ -1119,8 +1274,19 @@ function pantallaAdmin(pestana = 'resumen') {
   if (!perfil || perfil.rol !== 'admin') return pantallaInicio();
   const tabs = { resumen: ['grafico', 'Resumen'], usuarios: ['usuarios', 'Usuarios'], resultados: ['historial', 'Resultados'], banco: ['banco', 'Banco de preguntas'] };
   const cont = h('div');
+  const zonaMfa = h('div');
+  nivelVerificacion().then(aal => {
+    if (aal.currentLevel === 'aal2') return;
+    zonaMfa.replaceChildren(h('div', { class: 'alert ' + (MFA_OBLIGATORIA_ADMIN ? 'error' : 'info'), style: 'margin-bottom:16px' },
+      MFA_OBLIGATORIA_ADMIN
+        ? 'El panel de administración exige la verificación en dos pasos. Actívala en Mi cuenta y vuelve a entrar.'
+        : 'Protege el panel: activa la verificación en dos pasos en Mi cuenta. Pronto será obligatoria para administradores.',
+      ' ', h('button', { class: 'btn link', type: 'button', onclick: pantallaPerfil }, 'Ir a Mi cuenta')));
+    if (MFA_OBLIGATORIA_ADMIN) cont.replaceChildren();
+  });
   render(
     h('div', { class: 'page-head' }, h('p', { class: 'eyebrow' }, 'Administración'), h('h1', {}, tabs[pestana][1])),
+    zonaMfa,
     h('div', { class: 'tabs', role: 'tablist' }, Object.entries(tabs).map(([k, [ico, txt]]) =>
       h('button', { type: 'button', role: 'tab', 'aria-selected': String(k === pestana), onclick: () => pantallaAdmin(k) }, icono(ico), txt))),
     cont);
@@ -1407,6 +1573,13 @@ function errorFatal(titulo, texto) {
     h('button', { class: 'btn primary', type: 'button', onclick: () => location.reload() }, 'Reintentar'))));
 }
 
+/** Con la verificación activada, cambiar la contraseña exige antes el código. */
+async function irANuevaClave() {
+  const aal = await nivelVerificacion();
+  if (aal.nextLevel === 'aal2' && aal.currentLevel !== 'aal2') pantallaCodigoMfa(pantallaNuevaClave);
+  else pantallaNuevaClave();
+}
+
 async function init() {
   try {
     if (!window.Capacitor && 'serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
@@ -1425,14 +1598,14 @@ async function init() {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: 'cap-auth' },
   });
   sb.auth.onAuthStateChange((evento, s) => {
-    if (evento === 'PASSWORD_RECOVERY') { enRecuperacion = true; setTimeout(pantallaNuevaClave, 0); }
+    if (evento === 'PASSWORD_RECOVERY') { enRecuperacion = true; setTimeout(irANuevaClave, 0); }
     if (evento === 'SIGNED_OUT' && usuario) { usuario = null; perfil = null; setTimeout(() => pantallaLogin({ info: 'Tu sesión ha terminado.' }), 0); }
     if (evento === 'TOKEN_REFRESHED' && s && usuario) vaciarCola();
   });
 
   const { data } = await sb.auth.getSession();
   if (location.hash && /access_token|error/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
-  if (enRecuperacion && data.session) { pantallaNuevaClave(); return; }
+  if (enRecuperacion && data.session) { irANuevaClave(); return; }
   if (data.session) await entrarConSesion(data.session);
   else pantallaLogin({ error: errorEnlace ? traducirError({ message: errorEnlace }) : null });
   buscarActualizacion({ silencioso: true });
