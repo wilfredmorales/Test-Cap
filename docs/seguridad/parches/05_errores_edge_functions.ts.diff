@@ -1,0 +1,16 @@
+Parche H9 · No devolver mensajes internos en errores 500 (admin-usuarios y publicar-banco).
+
+-  } catch (e) {
+-    if (e instanceof ErrorUsuario) return respuesta(400, { error: e.message });
+-    console.error(e);
+-    return respuesta(500, { error: (e as Error).message });
+-  }
++  } catch (e) {
++    if (e instanceof ErrorUsuario) return respuesta(400, { error: e.message });
++    const ref = crypto.randomUUID().slice(0, 8);
++    console.error(ref, e);                       // el detalle queda en los registros de Supabase
++    return respuesta(500, { error: `Error interno (ref. ${ref})` });
++  }
+
+En admin-usuarios, sustituir igualmente los `respuesta(500, { error: e2.message })` y
+`respuesta(400, { error: error.message })` que reenvían errores de la base de datos o de Auth.

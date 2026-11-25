@@ -1,0 +1,7 @@
+Parche H8 · Política de seguridad de contenidos (probada con todo el recorrido de la app: 0 errores).
+Añadir en index.html, justo después de <meta charset="utf-8">:
+
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://bzalfptgfqsoalqgsklr.supabase.co https://raw.githubusercontent.com; worker-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'">
+
+Nota: GitHub Pages no permite cabeceras propias; frame-ancestors (anti-clickjacking) no funciona en
+<meta>. Para eso haría falta servir la web detrás de Cloudflare o Netlify con cabeceras.
