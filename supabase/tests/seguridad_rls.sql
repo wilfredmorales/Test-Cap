@@ -79,7 +79,15 @@ begin
   reset role;
 
   -- ===== Administrador =====
-  perform set_config('request.jwt.claims', json_build_object('sub', adm, 'role', 'authenticated')::text, true);
+  -- S31-S32 (spec 003, fase B): un admin SIN verificación en dos pasos (aal1) no es admin
+  perform set_config('request.jwt.claims', json_build_object('sub', adm, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+  set local role authenticated;
+  select count(*) into n from public.perfiles where id in (a, b, adm);
+  if n = 1 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S31 admin aal1 ve ' || n || ' perfiles]'; end if;
+  begin perform public.estadisticas_admin(); ko := ko + 1; det := det || ' [FALLA S32 admin aal1 usa RPC admin]'; exception when others then ok := ok + 1; end;
+  reset role;
+
+  perform set_config('request.jwt.claims', json_build_object('sub', adm, 'role', 'authenticated', 'aal', 'aal2')::text, true);
   set local role authenticated;
   select count(*) into n from public.perfiles where id in (a, b, adm); if n = 3 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S24 admin no ve perfiles]'; end if;
   begin delete from public.perfiles where id = b; ko := ko + 1; det := det || ' [FALLA S25 admin borra perfil por API]'; exception when insufficient_privilege then ok := ok + 1; end;

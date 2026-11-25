@@ -19,7 +19,7 @@ ataques probados (27 de 30 pruebas; las 3 que fallan son H5 y H7). Los riesgos p
 | ID | Sev. | Componente | Ataque | Impacto | Estado | Corrección |
 |---|---|---|---|---|---|---|
 | H1 | **Alta** | Actions `apk-android.yml` | Dependencia npm/pip comprometida ejecuta código con permiso de escritura | Código malicioso servido a todos los usuarios (robo de sesiones, incluida la del admin) | **Corregido 25-11** | Workflow nuevo (2 jobs) |
-| H2 | **Alta** | Auth / rol admin | Phishing o reutilización de contraseña del admin | Control total: usuarios, correos, banco con respuestas falsas | Abierto | Parche 02 + UI de MFA |
+| H2 | **Alta** | Auth / rol admin | Phishing o reutilización de contraseña del admin | Control total: usuarios, correos, banco con respuestas falsas | **Corregido 25-11** (fase B) | Migración 006 + funciones + app |
 | H3 | Media | Auth (registro y recuperación abiertos) | Altas y peticiones de correo masivas | Agotar el cupo de correos: nadie confirma ni recupera; cuentas basura | Abierto | CAPTCHA + SMTP propio + límites |
 | H4 | Media | APK | APK de depuración con firma distinta en cada compilación | Sesión extraíble con acceso físico/USB; no se puede verificar autenticidad ni actualizar | **Corregido 25-11** (firma `CN=Test CAP`, SHA-256 `b39e23ef…2a39`) | Secretos ANDROID_* |
 | H5 | Media | PostgreSQL (permisos por defecto) | Crear una tabla nueva sin RLS | La tabla queda legible y escribible por cualquiera con la clave pública | **Corregido 25-11** | Migración 005 |
@@ -158,7 +158,7 @@ activa (registros del 24-11: `email_not_confirmed`) y el redirect usado fue el d
 
 - [x] Parche 01 aplicado como migración 005 (25-11-2026): `supabase/tests/seguridad_rls.sql` → 31 PASA, 0 FALLA.
 - [ ] `get_advisors` (security) sin avisos tras cada migración.
-- [ ] MFA activado para todos los admins y parche 02 aplicado después.
+- [x] MFA activado por el admin y fase B aplicada (25-11-2026): `es_admin()` y las dos funciones exigen `aal2`; batería 33 PASA, 0 FALLA.
 - [x] Workflow del APK sustituido (25-11-2026): compilación sin escritura, `npm ci --ignore-scripts` con lockfile.
 - [x] Clave de firma de publicación en los secretos ANDROID_* (H4): APK 1.1.0 firmado el 25-11-2026.
 - [ ] Actualizar Capacitor (la CLI 6.1.2 arrastra `tar` 6 y `glob` 9 marcados como obsoletos; solo en compilación, no van dentro del APK).

@@ -83,6 +83,15 @@ Deno.serve(async (req) => {
   const { data: perfil } = await db.from("perfiles").select("rol, activo").eq("id", yo).single();
   if (!perfil || perfil.rol !== "admin" || !perfil.activo) return respuesta(403, { error: "Solo administradores" });
 
+  // Fase B (spec 003): el panel exige sesión verificada en dos pasos. El JWT ya lo validó getUser().
+  const aal = (() => {
+    try {
+      const b64 = jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      return JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4))).aal;
+    } catch { return null; }
+  })();
+  if (aal !== "aal2") return respuesta(403, { error: "El panel de administración exige la verificación en dos pasos" });
+
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return respuesta(400, { error: "Petición no válida" }); }
 

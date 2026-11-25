@@ -25,7 +25,7 @@ const MODOS = { examen: 'Simulacro', ampliacion: 'Ampliación', temas: 'Práctic
 const PUNTUACION_DEFECTO = { correcta: 1, incorrecta: -0.5, blanco: 0, aprobado: 50 };
 
 // Fase B de la verificación en dos pasos (spec 003): el panel exige una sesión verificada (aal2).
-const MFA_OBLIGATORIA_ADMIN = false;
+const MFA_OBLIGATORIA_ADMIN = true;
 
 const urlDatos = archivo => (window.Capacitor ? DATOS_REMOTOS : 'data/') + archivo;
 const redirectApp = () =>
@@ -1277,22 +1277,27 @@ function pantallaAdmin(pestana = 'resumen') {
   const tabs = { resumen: ['grafico', 'Resumen'], usuarios: ['usuarios', 'Usuarios'], resultados: ['historial', 'Resultados'], banco: ['banco', 'Banco de preguntas'] };
   const cont = h('div');
   const zonaMfa = h('div');
-  nivelVerificacion().then(aal => {
-    if (aal.currentLevel === 'aal2') return;
-    zonaMfa.replaceChildren(h('div', { class: 'alert ' + (MFA_OBLIGATORIA_ADMIN ? 'error' : 'info'), style: 'margin-bottom:16px' },
-      MFA_OBLIGATORIA_ADMIN
-        ? 'El panel de administración exige la verificación en dos pasos. Actívala en Mi cuenta y vuelve a entrar.'
-        : 'Protege el panel: activa la verificación en dos pasos en Mi cuenta. Pronto será obligatoria para administradores.',
-      ' ', h('button', { class: 'btn link', type: 'button', onclick: pantallaPerfil }, 'Ir a Mi cuenta')));
-    if (MFA_OBLIGATORIA_ADMIN) cont.replaceChildren();
-  });
   render(
     h('div', { class: 'page-head' }, h('p', { class: 'eyebrow' }, 'Administración'), h('h1', {}, tabs[pestana][1])),
     zonaMfa,
     h('div', { class: 'tabs', role: 'tablist' }, Object.entries(tabs).map(([k, [ico, txt]]) =>
       h('button', { type: 'button', role: 'tab', 'aria-selected': String(k === pestana), onclick: () => pantallaAdmin(k) }, icono(ico), txt))),
     cont);
-  ({ resumen: adminResumen, usuarios: adminUsuarios, resultados: adminResultados, banco: adminBanco })[pestana](cont);
+  cont.replaceChildren(h('p', { class: 'muted' }, 'Comprobando la verificación…'));
+  // Se comprueba ANTES de cargar nada: con la fase B activa, sin sesión verificada no se pide ningún dato.
+  nivelVerificacion().then(aal => {
+    if (!zonaMfa.isConnected) return;
+    const verificada = aal.currentLevel === 'aal2';
+    if (!verificada) {
+      zonaMfa.replaceChildren(h('div', { class: 'alert ' + (MFA_OBLIGATORIA_ADMIN ? 'error' : 'info'), style: 'margin-bottom:16px' },
+        MFA_OBLIGATORIA_ADMIN
+          ? 'El panel de administración exige la verificación en dos pasos. Actívala en Mi cuenta y vuelve a entrar.'
+          : 'Protege el panel: activa la verificación en dos pasos en Mi cuenta. Pronto será obligatoria para administradores.',
+        ' ', h('button', { class: 'btn link', type: 'button', onclick: pantallaPerfil }, 'Ir a Mi cuenta')));
+      if (MFA_OBLIGATORIA_ADMIN) { cont.replaceChildren(); return; }
+    }
+    ({ resumen: adminResumen, usuarios: adminUsuarios, resultados: adminResultados, banco: adminBanco })[pestana](cont);
+  });
 }
 
 async function adminResumen(cont) {

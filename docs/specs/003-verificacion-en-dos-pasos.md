@@ -1,6 +1,6 @@
 # Spec 003 · Verificación en dos pasos (auditoría H2)
 
-Estado: **fase A implementada · fase B pendiente de que el admin active la verificación**
+Estado: **implementada (fases A y B, 25-11-2026)** · solo administradores · botón para quitarla a otro usuario
 
 ## Objetivo
 
