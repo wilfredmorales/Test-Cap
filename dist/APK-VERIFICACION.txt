@@ -1,0 +1,6 @@
+Test CAP · APK prueba (debug)
+Compilado: 2026-11-25T09:42:01Z · commit 75ea442
+SHA-256 del APK: d7629aca756899ca538aab61b2edc011953462d37534892306b80e2f2a31dea4
+Certificado de firma:
+V2 Signer: certificate DN: C=US, O=Android, CN=Android Debug
+V2 Signer: certificate SHA-256 digest: 3ff1ffec9600c59d2158f3f59fddd673dadb2ad06e413fc476f89cd830de21a8
