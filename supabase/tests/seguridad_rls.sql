@@ -62,6 +62,10 @@ begin
   begin insert into public.resultados (tipo, modo, preguntas, correctas, falladas, blanco, puntos, porcentaje, aprobado, id_cliente)
           values ('mercancias', 'examen', 100, 100, 0, 0, 100, 9999, true, gen_random_uuid());
         ko := ko + 1; det := det || ' [FALLA S21 porcentaje 9999 aceptado (H7)]'; exception when others then ok := ok + 1; end;
+  -- S21b (compatibilidad): el insert que hace la app debe seguir funcionando
+  begin insert into public.resultados (tipo, modo, preguntas, correctas, falladas, blanco, puntos, porcentaje, aprobado, duracion_seg, version_banco, id_cliente)
+          values ('mercancias', 'examen', 100, 70, 20, 10, 60, 60, true, 3600, '584b27e6e98f', gen_random_uuid());
+        ok := ok + 1; exception when others then ko := ko + 1; det := det || ' [FALLA S21b insert normal de la app: ' || sqlerrm || ']'; end;
   reset role;
 
   -- ===== Usuario B desactivado =====

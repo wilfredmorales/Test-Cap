@@ -22,9 +22,9 @@ ataques probados (27 de 30 pruebas; las 3 que fallan son H5 y H7). Los riesgos p
 | H2 | **Alta** | Auth / rol admin | Phishing o reutilización de contraseña del admin | Control total: usuarios, correos, banco con respuestas falsas | Abierto | Parche 02 + UI de MFA |
 | H3 | Media | Auth (registro y recuperación abiertos) | Altas y peticiones de correo masivas | Agotar el cupo de correos: nadie confirma ni recupera; cuentas basura | Abierto | CAPTCHA + SMTP propio + límites |
 | H4 | Media | APK | APK de depuración con firma distinta en cada compilación | Sesión extraíble con acceso físico/USB; no se puede verificar autenticidad ni actualizar | Abierto | Parche 04 (firma de publicación) |
-| H5 | Media | PostgreSQL (permisos por defecto) | Crear una tabla nueva sin RLS | La tabla queda legible y escribible por cualquiera con la clave pública | Latente | Parche 01 |
+| H5 | Media | PostgreSQL (permisos por defecto) | Crear una tabla nueva sin RLS | La tabla queda legible y escribible por cualquiera con la clave pública | **Corregido 25-11** | Migración 005 |
 | H6 | Media | Auth (contraseñas) | Registro directo por API saltando la validación de la app; contraseñas filtradas | Contraseñas débiles o ya filtradas | Abierto | Configuración de Auth |
-| H7 | Baja | Tabla `resultados` | Insertar resultados propios inventados (nota, fecha) | Historial y estadísticas del admin manipulables | Abierto | Parche 01 |
+| H7 | Baja | Tabla `resultados` | Insertar resultados propios inventados (nota, fecha) | Historial y estadísticas del admin manipulables | **Mitigado 25-11** (fecha, rangos, 300/día) | Migración 005 |
 | H8 | Baja | Frontend | Sin CSP; sesión en `localStorage` | Si aparece un XSS, robo de la sesión | Abierto | Parche 03 (probado) |
 | H9 | Baja | Edge Functions | Provocar errores 500 | Mensajes internos devueltos al cliente (solo admins) | Abierto | Parche 05 |
 | H10 | Info | Auth (ajustes no visibles) | Cambio de contraseña con sesión robada | Persistencia tras robo de sesión | Sin verificar | Checklist §5 |
@@ -156,7 +156,7 @@ activa (registros del 24-11: `email_not_confirmed`) y el redirect usado fue el d
 
 ## 5. Checklist de despliegue seguro
 
-- [ ] Parche 01 como migración 005 y `supabase/tests/seguridad_rls.sql` → 30+ PASA, 0 FALLA.
+- [x] Parche 01 aplicado como migración 005 (25-11-2026): `supabase/tests/seguridad_rls.sql` → 31 PASA, 0 FALLA.
 - [ ] `get_advisors` (security) sin avisos tras cada migración.
 - [ ] MFA activado para todos los admins y parche 02 aplicado después.
 - [ ] Workflow del APK sustituido por el parche 04, con `package-lock.json` y clave de firma en secretos.
