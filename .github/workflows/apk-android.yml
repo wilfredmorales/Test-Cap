@@ -69,7 +69,22 @@ jobs:
           mkdir -p "$RUNNER_TEMP/salida"
           if [ -n "$KS_B64" ]; then
             echo "Compilando versión de publicación firmada"
-            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            # Al copiar desde el móvil se cuelan espacios y saltos de línea: se quitan.
+            LIMPIO=$(printf '%s' "$KS_B64" | tr -d ' \t\r\n')
+            echo "Diagnóstico de ANDROID_KEYSTORE_B64 (sin mostrar la clave):"
+            echo "  longitud: ${#LIMPIO} caracteres (una clave RSA 4096 ocupa unos 5.600)"
+            echo "  empieza por: ${LIMPIO:0:3} (debería ser MII)"
+            if [ $(( ${#LIMPIO} % 4 )) -ne 0 ]; then
+              echo "::error::ANDROID_KEYSTORE_B64 está incompleto (la longitud no es múltiplo de 4). Vuelve a copiar ks.txt entero."; exit 1
+            fi
+            if printf '%s' "$LIMPIO" | grep -q '[^A-Za-z0-9+/=]'; then
+              echo "::error::ANDROID_KEYSTORE_B64 contiene caracteres que no son de base64. Vuelve a copiar ks.txt."; exit 1
+            fi
+            printf '%s' "$LIMPIO" | base64 -d > "$RUNNER_TEMP/release.jks"
+            if ! keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass "$KS_PASS" -alias "$KEY_ALIAS" >/dev/null 2>&1; then
+              echo "::error::La clave se leyó, pero la contraseña (ANDROID_KEYSTORE_PASS) o el alias (ANDROID_KEY_ALIAS) no coinciden."; rm -f "$RUNNER_TEMP/release.jks"; exit 1
+            fi
+            echo "  la contraseña y el alias abren la clave: correcto"
             ./gradlew assembleRelease --no-daemon \
               -Pandroid.injected.signing.store.file="$RUNNER_TEMP/release.jks" \
               -Pandroid.injected.signing.store.password="$KS_PASS" \
