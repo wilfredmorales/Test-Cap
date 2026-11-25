@@ -92,6 +92,24 @@ Deno.serve(async (req) => {
         }
         return respuesta(200, { ok: true, quitados: factores.length });
       }
+      case "enlace": {
+        // Enlace de acceso SIN enviar correo (spec 004): invitación si el correo no tiene cuenta,
+        // cambio de contraseña si ya la tiene. El admin lo manda por un canal privado.
+        const email = String(body.email ?? "").trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return respuesta(400, { error: "Correo no válido" });
+        const nombre = String(body.nombre ?? "").slice(0, 80);
+        const redirectTo = typeof body.redirectTo === "string" ? body.redirectTo : undefined;
+        // Comparación exacta (Supabase guarda los correos en minúsculas); ilike trataría % y _ como comodines.
+        const { data: existe } = await servicio.from("perfiles").select("id").eq("email", email).maybeSingle();
+        const tipo = existe ? "recovery" : "invite";
+        const { data, error } = tipo === "invite"
+          ? await servicio.auth.admin.generateLink({ type: "invite", email, options: { data: { nombre }, redirectTo } })
+          : await servicio.auth.admin.generateLink({ type: "recovery", email, options: { redirectTo } });
+        if (error) return respuesta(400, { error: error.message });
+        const enlace = data?.properties?.action_link;
+        if (!enlace) return errorInterno(new Error("generateLink sin action_link"));
+        return respuesta(200, { ok: true, tipo, enlace });
+      }
       case "invitar": {
         const email = String(body.email ?? "").trim().toLowerCase();
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return respuesta(400, { error: "Correo no válido" });

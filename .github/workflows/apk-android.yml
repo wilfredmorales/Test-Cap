@@ -10,6 +10,7 @@ on:
   push:
     paths:
       - index.html
+      - privacidad.html
       - app.js
       - styles.css
       - icons/**

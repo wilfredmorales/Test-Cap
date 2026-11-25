@@ -329,7 +329,8 @@ function traducirError(e) {
     [/user (is )?banned/i, 'Esta cuenta está desactivada. Contacta con el administrador.'],
     [/already registered|already been registered/i, 'Ya existe una cuenta con ese correo. Inicia sesión o recupera la contraseña.'],
     [/password should be at least|weak password|password is too weak/i, 'La contraseña es demasiado débil: usa al menos 8 caracteres con letras y números.'],
-    [/rate limit|too many requests|over_email_send_rate_limit/i, 'Demasiados intentos. Espera unos minutos y vuelve a probar.'],
+    [/over_email_send_rate_limit|email rate limit/i, 'El servidor ha enviado demasiados correos en la última hora. Inténtalo más tarde.'],
+    [/rate limit|too many requests/i, 'Demasiados intentos. Espera unos minutos y vuelve a probar.'],
     [/same.*password|different from the old/i, 'La nueva contraseña debe ser distinta de la anterior.'],
     [/failed to fetch|network|load failed/i, 'Sin conexión con el servidor. Comprueba tu internet.'],
     [/expired|invalid.*(token|link)|otp/i, 'El enlace ha caducado o ya se usó. Pide uno nuevo.'],
@@ -621,7 +622,8 @@ function pantallaLogin({ error, info, email = '' } = {}) {
   render(marcoAcceso('Iniciar sesión', 'Entra con tu cuenta para hacer tests y guardar tu progreso.',
     form,
     h('p', { class: 'auth-alt' }, '¿No tienes cuenta? ',
-      h('button', { class: 'btn link', type: 'button', onclick: () => pantallaRegistro(form.email.value.trim()) }, 'Crear cuenta'))));
+      h('button', { class: 'btn link', type: 'button', onclick: () => pantallaRegistro(form.email.value.trim()) }, 'Crear cuenta')),
+    h('p', { class: 'auth-alt small' }, h('a', { href: 'privacidad.html' }, 'Política de privacidad'))));
 }
 
 function pantallaRegistro(email = '') {
@@ -660,7 +662,9 @@ function pantallaRegistro(email = '') {
   h('p', { class: 'hint' }, 'Mínimo 8 caracteres, con letras y números.'),
   campo('password2', 'Repite la contraseña', { type: 'password', autocomplete: 'new-password', required: true }),
   h('label', { class: 'check' }, acepto,
-    h('span', { class: 'small' }, 'Acepto que se guarden mi correo, mi nombre y mis resultados para usar la app.')),
+    h('span', { class: 'small' }, 'He leído y acepto la ',
+      h('a', { href: 'privacidad.html', target: '_blank', rel: 'noopener' }, 'política de privacidad'),
+      ': se guardan mi correo, mi nombre y mis resultados para usar la app.')),
   btn);
 
   render(marcoAcceso('Crear cuenta', 'Es gratis. Solo necesitas un correo.',
@@ -1305,7 +1309,81 @@ function pantallaPerfil() {
     h('section', { class: 'card' }, h('h2', {}, 'Verificación en dos pasos'), zonaMfa),
     h('section', { class: 'card' }, h('h2', {}, 'Sesión'),
       h('p', { class: 'muted small' }, 'Cierra la sesión en este dispositivo.'),
-      h('button', { class: 'btn danger', type: 'button', onclick: cerrarSesion }, 'Cerrar sesión')));
+      h('button', { class: 'btn danger', type: 'button', onclick: cerrarSesion }, 'Cerrar sesión')),
+    h('section', { class: 'card' }, h('h2', {}, 'Privacidad y datos'),
+      h('p', { class: 'small' }, 'Consulta qué datos guardamos y para qué en la ',
+        h('a', { href: 'privacidad.html' }, 'política de privacidad'), '.'),
+      h('p', { class: 'muted small' }, 'Eliminar la cuenta borra para siempre tu perfil y todos tus resultados. No se puede deshacer.'),
+      h('button', { class: 'btn danger', type: 'button', onclick: eliminarMiCuenta }, 'Eliminar mi cuenta')));
+}
+
+/** Baja de la cuenta (spec 004): contraseña actual + escribir ELIMINAR; se comprueba en el servidor. */
+function eliminarMiCuenta() {
+  const pass = h('input', { id: 'baja-password', type: 'password', autocomplete: 'current-password' });
+  const texto = h('input', { id: 'baja-confirmar', type: 'text', autocomplete: 'off', placeholder: 'ELIMINAR' });
+  const zonaAviso = h('div');
+  const btnOk = h('button', { class: 'btn danger-solid', type: 'submit' }, 'Eliminar mi cuenta');
+  const cerrar = () => capa.remove();
+  const form = h('form', {
+    class: 'form', novalidate: true,
+    onsubmit: async e => {
+      e.preventDefault();
+      if (texto.value.trim().toUpperCase() !== 'ELIMINAR') { zonaAviso.replaceChildren(aviso('error', 'Escribe ELIMINAR para confirmar.')); return; }
+      if (!pass.value) { zonaAviso.replaceChildren(aviso('error', 'Escribe tu contraseña.')); return; }
+      botonCargando(btnOk, true, 'Eliminando…');
+      try {
+        await llamarFuncion('mi-cuenta', { accion: 'eliminar', password: pass.value, confirmacion: 'ELIMINAR' });
+      } catch (err) {
+        botonCargando(btnOk, false);
+        zonaAviso.replaceChildren(aviso('error', traducirError(err)));
+        return;
+      }
+      const id = usuario.id;
+      cerrar();
+      ['cap.prefs', 'cap.stats', 'cap.session', 'cap.cola', 'cap.perfil'].forEach(k => lsDel(`${k}.${id}`));
+      await expulsar('Tu cuenta y tus datos se han eliminado.');
+    },
+  },
+  h('p', {}, h('strong', {}, 'Se borrarán para siempre tu cuenta, tu perfil y todos tus resultados.')),
+  zonaAviso,
+  h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Tu contraseña'), h('span', { class: 'field-input' }, pass)),
+  h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Escribe ELIMINAR para confirmar'), h('span', { class: 'field-input' }, texto)),
+  h('div', { class: 'row end' }, h('button', { class: 'btn', type: 'button', onclick: cerrar }, 'Cancelar'), btnOk));
+  const capa = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, h('div', { class: 'card modal-card' }, h('h2', {}, 'Eliminar mi cuenta'), form));
+  document.body.append(capa);
+  pass.focus();
+}
+
+/** Muestra un enlace de acceso para mandarlo por un canal privado (spec 004). */
+function mostrarEnlace(titulo, explicacion, enlace) {
+  const campoEnlace = h('textarea', { id: 'enlace-acceso', class: 'enlace', readonly: true, rows: 4 }, enlace);
+  const btnCopiar = h('button', { class: 'btn primary', type: 'button' }, 'Copiar enlace');
+  btnCopiar.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(enlace); toast('Enlace copiado.'); }
+    catch { campoEnlace.focus(); campoEnlace.select(); toast('Mantén pulsado para copiar el enlace seleccionado.'); }
+  });
+  const btnCompartir = navigator.share ? h('button', {
+    class: 'btn', type: 'button',
+    onclick: () => navigator.share({ title: 'Test CAP', text: enlace }).catch(() => {}),
+  }, 'Compartir') : null;
+  const capa = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' },
+    h('div', { class: 'card modal-card' },
+      h('h2', {}, titulo),
+      h('p', { class: 'small' }, explicacion),
+      aviso('info', 'Este enlace da acceso a la cuenta: mándalo solo a esa persona, por un canal privado (por ejemplo, WhatsApp). Caduca pronto (normalmente en 1 hora) y solo sirve una vez.'),
+      campoEnlace,
+      h('div', { class: 'row end' },
+        h('button', { class: 'btn', type: 'button', onclick: () => capa.remove() }, 'Cerrar'), btnCompartir, btnCopiar)));
+  document.body.append(capa);
+}
+
+async function pedirEnlace(email, nombre = '') {
+  const r = await llamarAdmin({ accion: 'enlace', email, nombre, redirectTo: redirectApp() });
+  if (r.tipo === 'invite') {
+    mostrarEnlace('Enlace de invitación', `Al abrirlo, ${email} creará su contraseña y entrará en la app. No se ha enviado ningún correo.`, r.enlace);
+  } else {
+    mostrarEnlace('Enlace para cambiar la contraseña', `${email} ya tiene cuenta. Con este enlace podrá poner una contraseña nueva. No se ha enviado ningún correo.`, r.enlace);
+  }
 }
 
 /* ---------- administración ---------- */
@@ -1367,7 +1445,7 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
     }, h('span', { class: 'field-input grow' }, buscar), h('button', { class: 'btn primary', type: 'submit' }, 'Buscar')),
     h('section', { class: 'card' }, lista),
     h('section', { class: 'card' }, h('h2', {}, 'Invitar a un usuario'),
-      h('p', { class: 'muted small' }, 'Le llega un correo para crear su contraseña.'),
+      h('p', { class: 'muted small' }, 'Envía la invitación por correo o copia un enlace para mandarlo tú (no gasta el cupo de correos).'),
       h('form', {
         class: 'toolbar', onsubmit: async e => {
           e.preventDefault();
@@ -1375,10 +1453,25 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
           if (!correoValido(email)) return toast('Escribe un correo válido.');
           botonCargando(btnInv, true, 'Enviando…');
           try { await llamarAdmin({ accion: 'invitar', email, nombre: invNombre.value.trim(), redirectTo: redirectApp() }); toast(`Invitación enviada a ${email}.`); invEmail.value = ''; invNombre.value = ''; }
-          catch (err) { toast(traducirError(err)); }
+          catch (err) {
+            const txt = traducirError(err);
+            toast(/correos en la última hora/.test(txt) ? `${txt} Mientras tanto, usa "Copiar enlace".` : txt, 7000);
+          }
           botonCargando(btnInv, false);
         },
-      }, h('span', { class: 'field-input grow' }, invEmail), h('span', { class: 'field-input grow' }, invNombre), btnInv)));
+      }, h('span', { class: 'field-input grow' }, invEmail), h('span', { class: 'field-input grow' }, invNombre), btnInv,
+      h('button', {
+        class: 'btn', type: 'button', id: 'btn-copiar-enlace',
+        onclick: async ev => {
+          const email = invEmail.value.trim().toLowerCase();
+          if (!correoValido(email)) return toast('Escribe un correo válido.');
+          botonCargando(ev.currentTarget, true, 'Generando…');
+          const b = ev.currentTarget;
+          try { await pedirEnlace(email, invNombre.value.trim()); invEmail.value = ''; invNombre.value = ''; }
+          catch (err) { toast(traducirError(err), 7000); }
+          botonCargando(b, false);
+        },
+      }, 'Copiar enlace'))));
 
   let consulta = sb.from('perfiles').select('id, email, nombre, rol, activo, creado, ultimo_acceso', { count: 'exact' })
     .order('creado', { ascending: false }).range(pagina * POR_PAGINA, pagina * POR_PAGINA + POR_PAGINA - 1);
@@ -1421,6 +1514,14 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
             toast(e2 ? traducirError(e2) : 'Enlace enviado.');
           },
         }, 'Enviar recuperación'),
+        h('button', {
+          class: 'btn sm', type: 'button', disabled: yo || !u.activo,
+          onclick: async ev => {
+            const b = ev.currentTarget; botonCargando(b, true, 'Generando…');
+            try { await pedirEnlace(u.email); } catch (err) { toast(traducirError(err), 7000); }
+            botonCargando(b, false);
+          },
+        }, 'Copiar enlace de acceso'),
         h('button', {
           class: 'btn sm', type: 'button', disabled: yo,
           onclick: () => accion(`¿Quitar la verificación en dos pasos de ${u.email}? Podrá entrar solo con su contraseña y, si es administrador, tendrá que volver a activarla para usar el panel.`,
