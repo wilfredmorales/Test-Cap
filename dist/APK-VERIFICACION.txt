@@ -1,6 +1,6 @@
 Test CAP · APK publicacion
-Compilado: 2026-11-25T19:30:18Z · commit 84a7989
-SHA-256 del APK: df25c9256986f5ba821f84da7495017c206c0c06dceaa8d290a57517b5523a1f
+Compilado: 2026-11-25T20:18:47Z · commit 56529f0
+SHA-256 del APK: b9a3d2220368e37e1d21ac59c6249fa27f74dd3dacd3fff37c93fe581d0e8ce6
 Certificado de firma:
 V2 Signer: certificate DN: CN=Test CAP
 V2 Signer: certificate SHA-256 digest: b39e23ef96be1349f5c586272f9641390846b4ca6f27cb8156496bb9c09e2a39
