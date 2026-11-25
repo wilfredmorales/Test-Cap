@@ -98,6 +98,15 @@ begin
   if n = 1 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S29 admin no puede promover]'; end if;
   reset role;
 
+  -- ===== S33 (migración 007): las Edge Functions (service_role) pueden desactivar y cambiar rol =====
+  set local role service_role;
+  begin
+    update public.perfiles set activo = false where id = b; update public.perfiles set rol = 'admin' where id = b;
+    update public.perfiles set rol = 'usuario', activo = true where id = b;
+    ok := ok + 1;
+  exception when others then ko := ko + 1; det := det || ' [FALLA S33 la función no puede desactivar: ' || sqlerrm || ']'; end;
+  reset role;
+
   -- ===== Permisos por defecto (parche H5): una tabla nueva no debe quedar abierta =====
   create table public._prueba_permisos_por_defecto (x int);
   if has_table_privilege('anon', 'public._prueba_permisos_por_defecto', 'select') then

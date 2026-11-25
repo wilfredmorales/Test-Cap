@@ -697,8 +697,9 @@ function pantallaRecuperar(email = '') {
       h('button', { class: 'btn link', type: 'button', onclick: () => pantallaLogin({ email: form.email.value.trim() }) }, '← Volver a iniciar sesión'))));
 }
 
-function pantallaNuevaClave() {
-  const btn = h('button', { class: 'btn primary block', type: 'submit' }, 'Guardar contraseña');
+/** Nueva contraseña: tras un enlace de recuperación o, con `invitacion`, la primera vez que entra un invitado. */
+function pantallaNuevaClave(invitacion = false) {
+  const btn = h('button', { class: 'btn primary block', type: 'submit' }, invitacion ? 'Crear contraseña y entrar' : 'Guardar contraseña');
   const zonaAviso = h('div');
   const form = h('form', {
     class: 'form', novalidate: true,
@@ -712,7 +713,8 @@ function pantallaNuevaClave() {
       botonCargando(btn, false);
       if (error) { zonaAviso.replaceChildren(aviso('error', traducirError(error))); return; }
       enRecuperacion = false;
-      toast('Contraseña cambiada.');
+      lsDel('cap.claveInvitacionPendiente');
+      toast(invitacion ? 'Contraseña creada. ¡Bienvenido!' : 'Contraseña cambiada.');
       const { data } = await sb.auth.getSession();
       if (data.session) await entrarConSesion(data.session); else pantallaLogin({ info: 'Contraseña cambiada. Inicia sesión.' });
     },
@@ -722,8 +724,46 @@ function pantallaNuevaClave() {
   h('p', { class: 'hint' }, 'Mínimo 8 caracteres, con letras y números.'),
   campo('password2', 'Repite la contraseña', { type: 'password', autocomplete: 'new-password', required: true }),
   btn);
-  render(marcoAcceso('Nueva contraseña', 'Escribe la contraseña que quieres usar a partir de ahora.', form));
+  render(invitacion
+    ? marcoAcceso('Crea tu contraseña', 'Te han invitado a Test CAP. Elige la contraseña con la que entrarás a partir de ahora.', form,
+      h('p', { class: 'auth-alt' }, h('button', { class: 'btn link', type: 'button', onclick: cerrarSesion }, 'Ahora no')))
+    : marcoAcceso('Nueva contraseña', 'Escribe la contraseña que quieres usar a partir de ahora.', form));
 }
+
+/* ---------- la cuenta sigue existiendo y activa ---------- */
+
+let comprobandoCuenta = false;
+/** Pregunta al servidor si la cuenta sigue existiendo y activa; si no, cierra la sesión en este dispositivo. */
+async function comprobarCuentaViva() {
+  if (!usuario || comprobandoCuenta || !navigator.onLine || !sb) return;
+  comprobandoCuenta = true;
+  try {
+    let motivo = null;
+    const { error } = await sb.auth.getUser();
+    if (error) {
+      // Sin conexión o fallo del servidor: no se expulsa a nadie por eso.
+      if (![401, 403, 404].includes(error.status) && !/not exist|not found|banned/i.test(error.message || '')) return;
+      motivo = 'Tu cuenta ya no está disponible. Si crees que es un error, contacta con el administrador.';
+    } else {
+      const { data: p, error: e2 } = await sb.from('perfiles').select('activo').eq('id', usuario.id).maybeSingle();
+      if (e2) return;
+      if (!p) motivo = 'Tu cuenta ha sido eliminada.';
+      else if (!p.activo) motivo = 'Tu cuenta ha sido desactivada. Contacta con el administrador.';
+    }
+    if (motivo) await expulsar(motivo);
+  } finally { comprobandoCuenta = false; }
+}
+
+async function expulsar(motivo) {
+  pararTimer();
+  session = null; usuario = null; perfil = null; // antes de signOut, para que no salte otro aviso
+  try { await sb.auth.signOut({ scope: 'local' }); } catch { /* se borra la sesión local igualmente */ }
+  pantallaLogin({ error: motivo });
+}
+
+setInterval(comprobarCuentaViva, 2 * 60 * 1000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') comprobarCuentaViva(); });
+window.addEventListener('online', comprobarCuentaViva);
 
 /* ---------- cabecera y menú de cuenta ---------- */
 
@@ -1605,6 +1645,7 @@ async function init() {
   const params = new URLSearchParams(location.hash.slice(1));
   const errorEnlace = params.get('error_description');
   enRecuperacion = params.get('type') === 'recovery';
+  const esInvitacion = params.get('type') === 'invite';
 
   sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: 'cap-auth' },
@@ -1618,6 +1659,10 @@ async function init() {
   const { data } = await sb.auth.getSession();
   if (location.hash && /access_token|error/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
   if (enRecuperacion && data.session) { irANuevaClave(); return; }
+  // El enlace de invitación ya inicia sesión: antes de entrar, el invitado crea su contraseña.
+  // Se recuerda por si cierra la app sin hacerlo.
+  if (esInvitacion && data.session) lsSet('cap.claveInvitacionPendiente', data.session.user.id);
+  if (data.session && lsGet('cap.claveInvitacionPendiente', null) === data.session.user.id) { pantallaNuevaClave(true); return; }
   if (data.session) await entrarConSesion(data.session);
   else pantallaLogin({ error: errorEnlace ? traducirError({ message: errorEnlace }) : null });
   buscarActualizacion({ silencioso: true });
