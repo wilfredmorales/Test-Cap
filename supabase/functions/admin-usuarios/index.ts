@@ -62,6 +62,20 @@ Deno.serve(async (req) => {
         if (error) return respuesta(500, { error: error.message });
         return respuesta(200, { ok: true });
       }
+      case "quitar_mfa": {
+        // Para quien pierde el móvil con la verificación en dos pasos activada.
+        if (!UUID.test(id)) return respuesta(400, { error: "Usuario no válido" });
+        if (id === yo) return respuesta(400, { error: "No puedes quitar tu propia verificación desde aquí; hazlo en Mi cuenta" });
+        const { data: lista, error: e1 } = await servicio.auth.admin.mfa.listFactors({ userId: id });
+        if (e1) return respuesta(500, { error: e1.message });
+        const factores = lista?.factors ?? [];
+        if (!factores.length) return respuesta(400, { error: "Este usuario no tiene la verificación en dos pasos activada" });
+        for (const f of factores) {
+          const { error: e2 } = await servicio.auth.admin.mfa.deleteFactor({ userId: id, id: f.id });
+          if (e2) return respuesta(500, { error: e2.message });
+        }
+        return respuesta(200, { ok: true, quitados: factores.length });
+      }
       case "invitar": {
         const email = String(body.email ?? "").trim().toLowerCase();
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return respuesta(400, { error: "Correo no válido" });

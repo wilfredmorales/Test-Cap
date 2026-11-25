@@ -471,10 +471,12 @@ async function seccionMfa(zona) {
         btn));
     return;
   }
+  // Solo los administradores pueden activarla; a un usuario normal sin verificación no se le muestra.
+  if (!esAdmin) { const tarjeta = zona.closest('section'); if (tarjeta) tarjeta.remove(); return; }
   const btn = h('button', { class: 'btn primary', type: 'button' }, 'Activar');
   btn.addEventListener('click', () => activarMfa(zona, f.todos));
   zona.replaceChildren(
-    esAdmin ? aviso('info', 'Como administrador, te recomendamos activarla: protege el panel aunque alguien consiga tu contraseña.') : null,
+    aviso('info', 'Protege el panel de administración aunque alguien consiga tu contraseña.'),
     h('p', { class: 'small' }, 'Además de la contraseña, al entrar se pedirá un código de 6 números que cambia cada 30 segundos en una app de autenticación (Google Authenticator, Microsoft Authenticator o Aegis).'),
     h('div', { class: 'row' }, btn));
 }
@@ -1374,6 +1376,11 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
             toast(e2 ? traducirError(e2) : 'Enlace enviado.');
           },
         }, 'Enviar recuperación'),
+        h('button', {
+          class: 'btn sm', type: 'button', disabled: yo,
+          onclick: () => accion(`¿Quitar la verificación en dos pasos de ${u.email}? Podrá entrar solo con su contraseña y, si es administrador, tendrá que volver a activarla para usar el panel.`,
+            { accion: 'quitar_mfa', id: u.id }, true),
+        }, 'Quitar verificación en dos pasos'),
         h('button', {
           class: 'btn sm danger', type: 'button', disabled: yo || u.rol === 'admin',
           onclick: () => accion(`¿Eliminar la cuenta de ${u.email} y todos sus resultados? No se puede deshacer.`, { accion: 'eliminar', id: u.id }, true),
