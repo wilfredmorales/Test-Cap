@@ -13,6 +13,13 @@ function respuesta(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 }
 
+/** Error inesperado: el detalle va a los registros de Supabase; al cliente, solo una referencia (auditoría H9). */
+function errorInterno(e: unknown) {
+  const ref = crypto.randomUUID().slice(0, 8);
+  console.error(`[${ref}]`, e);
+  return respuesta(500, { error: `Error interno (ref. ${ref}). Inténtalo de nuevo.` });
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return respuesta(405, { error: "Método no permitido" });
@@ -29,6 +36,15 @@ Deno.serve(async (req) => {
   const { data: perfil } = await servicio.from("perfiles").select("rol, activo").eq("id", yo).single();
   if (!perfil || perfil.rol !== "admin" || !perfil.activo) return respuesta(403, { error: "Solo administradores" });
 
+  // Fase B (spec 003): el panel exige sesión verificada en dos pasos. El JWT ya lo validó getUser().
+  const aal = (() => {
+    try {
+      const b64 = jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+      return JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4))).aal;
+    } catch { return null; }
+  })();
+  if (aal !== "aal2") return respuesta(403, { error: "El panel de administración exige la verificación en dos pasos" });
+
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return respuesta(400, { error: "Petición no válida" }); }
   const id = String(body.id ?? "");
@@ -43,7 +59,7 @@ Deno.serve(async (req) => {
         if (error) return respuesta(400, { error: error.message });
         // Bloquea también el inicio de sesión (y renovar la sesión) en Supabase Auth.
         const { error: e2 } = await servicio.auth.admin.updateUserById(id, { ban_duration: activo ? "none" : "876000h" });
-        if (e2) return respuesta(500, { error: e2.message });
+        if (e2) return errorInterno(e2);
         return respuesta(200, { ok: true });
       }
       case "rol": {
@@ -59,8 +75,40 @@ Deno.serve(async (req) => {
         const { data: objetivo } = await servicio.from("perfiles").select("rol").eq("id", id).single();
         if (objetivo?.rol === "admin") return respuesta(400, { error: "Quita primero el rol de administrador" });
         const { error } = await servicio.auth.admin.deleteUser(id);
-        if (error) return respuesta(500, { error: error.message });
+        if (error) return errorInterno(error);
         return respuesta(200, { ok: true });
+      }
+      case "quitar_mfa": {
+        // Para quien pierde el móvil con la verificación en dos pasos activada.
+        if (!UUID.test(id)) return respuesta(400, { error: "Usuario no válido" });
+        if (id === yo) return respuesta(400, { error: "No puedes quitar tu propia verificación desde aquí; hazlo en Mi cuenta" });
+        const { data: lista, error: e1 } = await servicio.auth.admin.mfa.listFactors({ userId: id });
+        if (e1) return errorInterno(e1);
+        const factores = lista?.factors ?? [];
+        if (!factores.length) return respuesta(400, { error: "Este usuario no tiene la verificación en dos pasos activada" });
+        for (const f of factores) {
+          const { error: e2 } = await servicio.auth.admin.mfa.deleteFactor({ userId: id, id: f.id });
+          if (e2) return errorInterno(e2);
+        }
+        return respuesta(200, { ok: true, quitados: factores.length });
+      }
+      case "enlace": {
+        // Enlace de acceso SIN enviar correo (spec 004): invitación si el correo no tiene cuenta,
+        // cambio de contraseña si ya la tiene. El admin lo manda por un canal privado.
+        const email = String(body.email ?? "").trim().toLowerCase();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return respuesta(400, { error: "Correo no válido" });
+        const nombre = String(body.nombre ?? "").slice(0, 80);
+        const redirectTo = typeof body.redirectTo === "string" ? body.redirectTo : undefined;
+        // Comparación exacta (Supabase guarda los correos en minúsculas); ilike trataría % y _ como comodines.
+        const { data: existe } = await servicio.from("perfiles").select("id").eq("email", email).maybeSingle();
+        const tipo = existe ? "recovery" : "invite";
+        const { data, error } = tipo === "invite"
+          ? await servicio.auth.admin.generateLink({ type: "invite", email, options: { data: { nombre }, redirectTo } })
+          : await servicio.auth.admin.generateLink({ type: "recovery", email, options: { redirectTo } });
+        if (error) return respuesta(400, { error: error.message });
+        const enlace = data?.properties?.action_link;
+        if (!enlace) return errorInterno(new Error("generateLink sin action_link"));
+        return respuesta(200, { ok: true, tipo, enlace });
       }
       case "invitar": {
         const email = String(body.email ?? "").trim().toLowerCase();
@@ -75,6 +123,6 @@ Deno.serve(async (req) => {
         return respuesta(400, { error: "Acción desconocida" });
     }
   } catch (e) {
-    return respuesta(500, { error: (e as Error).message });
+    return errorInterno(e);
   }
 });

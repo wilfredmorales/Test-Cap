@@ -1,32 +1,43 @@
 name: APK Android
 
-# Compila la app Android (APK de prueba) y la guarda en dist/test-cap.apk.
+# Compila la app Android y la guarda en dist/test-cap.apk (auditoría H1 y H4).
+# - "compilar" ejecuta código de terceros (npm, Gradle) y por eso NO puede escribir en el repo:
+#   permiso de solo lectura, sin credenciales de git y npm sin scripts de instalación.
+# - "guardar" solo copia el APK ya compilado; no ejecuta código de terceros.
+# - Con los secretos ANDROID_* compila la versión de publicación firmada con una clave estable;
+#   sin ellos, compila la versión de prueba (debug) como antes.
 on:
   push:
     paths:
       - index.html
+      - privacidad.html
       - app.js
       - styles.css
       - icons/**
       - vendor/**
+      - android-recursos/**
       - package.json
+      - package-lock.json
       - capacitor.config.json
-      - scripts/iconos_android.py
       - .github/workflows/apk-android.yml
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: apk-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  apk:
+  compilar:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -34,27 +45,94 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Comprobar que este paso no puede escribir en el repositorio
+        run: |
+          if git config --get-regexp 'http\..*\.extraheader' >/dev/null; then
+            echo "::error::Hay credenciales de git en el paso de compilación"; exit 1
+          fi
+          echo "Sin credenciales de git: correcto"
       - name: Preparar proyecto
         run: |
-          npm install --no-audit --no-fund
+          npm ci --ignore-scripts --no-audit --no-fund
           npm run www
           npx cap add android
-          pip install pillow
-          python scripts/iconos_android.py
+          cp -r android-recursos/res/. android/app/src/main/res/
+          rm -f android/app/src/main/res/mipmap-anydpi-v26/*.xml
           npx cap sync android
       - name: Compilar APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/salida"
+          if [ -n "$KS_B64" ]; then
+            echo "Compilando versión de publicación firmada"
+            # Al copiar desde el móvil se cuelan espacios y saltos de línea: se quitan.
+            LIMPIO=$(printf '%s' "$KS_B64" | tr -d ' \t\r\n')
+            echo "Diagnóstico de ANDROID_KEYSTORE_B64 (sin mostrar la clave):"
+            echo "  longitud: ${#LIMPIO} caracteres (una clave RSA 4096 ocupa unos 5.600)"
+            echo "  empieza por: ${LIMPIO:0:3} (debería ser MII)"
+            if [ $(( ${#LIMPIO} % 4 )) -ne 0 ]; then
+              echo "::error::ANDROID_KEYSTORE_B64 está incompleto (la longitud no es múltiplo de 4). Vuelve a copiar ks.txt entero."; exit 1
+            fi
+            if printf '%s' "$LIMPIO" | grep -q '[^A-Za-z0-9+/=]'; then
+              echo "::error::ANDROID_KEYSTORE_B64 contiene caracteres que no son de base64. Vuelve a copiar ks.txt."; exit 1
+            fi
+            printf '%s' "$LIMPIO" | base64 -d > "$RUNNER_TEMP/release.jks"
+            if ! keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass "$KS_PASS" -alias "$KEY_ALIAS" >/dev/null 2>&1; then
+              echo "::error::La clave se leyó, pero la contraseña (ANDROID_KEYSTORE_PASS) o el alias (ANDROID_KEY_ALIAS) no coinciden."; rm -f "$RUNNER_TEMP/release.jks"; exit 1
+            fi
+            echo "  la contraseña y el alias abren la clave: correcto"
+            ./gradlew assembleRelease --no-daemon \
+              -Pandroid.injected.signing.store.file="$RUNNER_TEMP/release.jks" \
+              -Pandroid.injected.signing.store.password="$KS_PASS" \
+              -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+              -Pandroid.injected.signing.key.password="$KEY_PASS"
+            rm -f "$RUNNER_TEMP/release.jks"
+            cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/salida/test-cap.apk"
+            echo "publicacion" > "$RUNNER_TEMP/salida/tipo.txt"
+          else
+            echo "::warning::Sin clave de firma (secretos ANDROID_*): se compila la versión de prueba"
+            ./gradlew assembleDebug --no-daemon
+            cp app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/salida/test-cap.apk"
+            echo "prueba (debug)" > "$RUNNER_TEMP/salida/tipo.txt"
+          fi
+          APKSIGNER="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner"
+          {
+            echo "Test CAP · APK $(cat "$RUNNER_TEMP/salida/tipo.txt")"
+            echo "Compilado: $(date -u +%Y-%m-%dT%H:%M:%SZ) · commit ${GITHUB_SHA::7}"
+            echo "SHA-256 del APK: $(sha256sum "$RUNNER_TEMP/salida/test-cap.apk" | cut -d' ' -f1)"
+            echo "Certificado de firma:"
+            "$APKSIGNER" verify --print-certs "$RUNNER_TEMP/salida/test-cap.apk" | grep -E "SHA-256|DN:"
+          } > "$RUNNER_TEMP/salida/APK-VERIFICACION.txt"
+          cat "$RUNNER_TEMP/salida/APK-VERIFICACION.txt" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: ${{ runner.temp }}/salida/
+          retention-days: 7
+
+  guardar:
+    needs: compilar
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: apk
+          path: apk-nuevo
       - name: Guardar APK
         run: |
           mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk dist/test-cap.apk
-          ls -la dist
+          cp apk-nuevo/test-cap.apk dist/test-cap.apk
+          cp apk-nuevo/APK-VERIFICACION.txt dist/APK-VERIFICACION.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898+github-actions[bot]@users.noreply.github.com"
-          git add dist/test-cap.apk
-          git commit -m "APK de prueba compilado" || exit 0
+          git add dist/test-cap.apk dist/APK-VERIFICACION.txt
+          git commit -m "APK compilado ($(head -1 apk-nuevo/tipo.txt))" || exit 0
           for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done

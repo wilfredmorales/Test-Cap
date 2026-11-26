@@ -1,0 +1,77 @@
+# Parche H1 (y H4) · Sustituye a .github/workflows/apk-android.yml. PROPUESTO, NO APLICADO.
+# - La compilación (que ejecuta código de npm y Gradle de terceros) NO tiene permiso de escritura.
+# - npm ci con lockfile y sin scripts de instalación.
+# - Solo el último paso, sin código de terceros, guarda el APK en el repositorio.
+# - Firma estable de publicación con una clave guardada en los secretos de GitHub (H4).
+# Requisitos: package-lock.json en el repo (npm install --package-lock-only) y los secretos
+# ANDROID_KEYSTORE_B64, ANDROID_KEYSTORE_PASS, ANDROID_KEY_ALIAS, ANDROID_KEY_PASS.
+name: APK Android
+on:
+  push:
+    paths: [index.html, app.js, styles.css, icons/**, vendor/**, package.json, package-lock.json,
+            capacitor.config.json, scripts/iconos_android.py, .github/workflows/apk-android.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  compilar:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Preparar proyecto
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run www
+          npx cap add android
+          pip install --require-hashes -r scripts/requirements-iconos.txt   # pillow con hash fijado
+          python scripts/iconos_android.py
+          npx cap sync android
+      - name: Compilar APK firmado
+        working-directory: android
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
+        run: |
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          ./gradlew assembleRelease --no-daemon \
+            -Pandroid.injected.signing.store.file="$RUNNER_TEMP/release.jks" \
+            -Pandroid.injected.signing.store.password="$KS_PASS" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASS"
+          rm -f "$RUNNER_TEMP/release.jks"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+  guardar:
+    needs: compilar
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: apk, path: dist-nuevo }
+      - name: Guardar APK
+        run: |
+          mkdir -p dist && cp dist-nuevo/app-release.apk dist/test-cap.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898+github-actions[bot]@users.noreply.github.com"
+          git add dist/test-cap.apk
+          git commit -m "APK compilado" || exit 0
+          for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done

@@ -14,8 +14,9 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 // Dirección pública de la app (los enlaces de los correos vuelven aquí).
 const URL_APP = 'https://wilfredmorales.github.io/Test-Cap/';
 // En la app instalada (APK) las actualizaciones del banco se buscan en GitHub.
-const DATOS_REMOTOS = 'https://raw.githubusercontent.com/wilfredmorales/Test-Cap/claude/testcat-repo-review-540xv2/data/';
-const SUBIR_ZIP_URL = 'https://github.com/wilfredmorales/Test-Cap/upload/claude/testcat-repo-review-540xv2/fuentes';
+// El APK lee el banco de la propia web (GitHub Pages): sigue a la rama que publique Pages, sin nombres de rama aquí.
+const DATOS_REMOTOS = URL_APP + 'data/';
+const SUBIR_ZIP_URL = 'https://github.com/wilfredmorales/Test-Cap/upload/main/fuentes';
 
 const TIPOS = {
   mercancias: { nombre: 'Mercancías', icono: 'camion', obligatorias: ['1', '2'], especifica: '2', complementarias: ['4', '4-5'] },
@@ -23,6 +24,9 @@ const TIPOS = {
 };
 const MODOS = { examen: 'Simulacro', ampliacion: 'Ampliación', temas: 'Práctica por temas', falladas: 'Repaso de falladas' };
 const PUNTUACION_DEFECTO = { correcta: 1, incorrecta: -0.5, blanco: 0, aprobado: 50 };
+
+// Fase B de la verificación en dos pasos (spec 003): el panel exige una sesión verificada (aal2).
+const MFA_OBLIGATORIA_ADMIN = true;
 
 const urlDatos = archivo => (window.Capacitor ? DATOS_REMOTOS : 'data/') + archivo;
 const redirectApp = () =>
@@ -223,7 +227,7 @@ async function aplicarBanco(nuevo, origen) {
 async function buscarActualizacion({ silencioso = false } = {}) {
   if (!navigator.onLine) { if (!silencioso) toast('Sin conexión. Inténtalo cuando tengas internet.'); return; }
   try {
-    const v = await (await fetch(urlDatos('version.json'), { cache: 'no-store' })).json();
+    const v = await (await fetch(urlDatos('version.json') + '?t=' + Date.now(), { cache: 'no-store' })).json();
     if (v.version === banco.version) { if (!silencioso) toast('Ya tienes la última versión del banco.'); return; }
     if (silencioso && banco.fechaFuente && v.fechaFuente && v.fechaFuente < banco.fechaFuente) return;
     const res = await fetch(urlDatos('banco-cap.json') + '?v=' + encodeURIComponent(v.version), { cache: 'no-store' });
@@ -283,7 +287,8 @@ async function hashTexto(s) {
   } catch { return 'local-' + Date.now(); }
 }
 
-async function importarZip(file) {
+/** Lee y valida el ZIP oficial. No cambia el banco del dispositivo. */
+async function leerZip(file) {
   if (!window.JSZip) throw new Error('No se pudo cargar el lector de ZIP');
   const zip = await JSZip.loadAsync(file);
   const objetivos = [], preguntas = [], problemas = [];
@@ -310,7 +315,7 @@ async function importarZip(file) {
     generado: new Date().toISOString(), fuente: file.name, total: preguntas.length,
     secciones: banco.secciones, objetivos, preguntas,
   };
-  return aplicarBanco(nuevo, 'ZIP importado');
+  return nuevo;
 }
 
 /* ---------- cuentas (Supabase Auth) ---------- */
@@ -319,11 +324,14 @@ function traducirError(e) {
   const m = (e && (e.message || e.error_description || e.error)) || String(e);
   const tabla = [
     [/invalid login credentials/i, 'Correo o contraseña incorrectos.'],
+    [/invalid totp|totp code|mfa_verification|code.*(invalid|expired)/i, 'Código incorrecto o caducado. Escribe el código que muestra ahora tu app de autenticación.'],
+    [/aal2|assurance level/i, 'Esta acción necesita la verificación en dos pasos. Vuelve a iniciar sesión.'],
     [/email not confirmed/i, 'Aún no has confirmado tu correo. Revisa tu bandeja de entrada (y la de spam).'],
     [/user (is )?banned/i, 'Esta cuenta está desactivada. Contacta con el administrador.'],
     [/already registered|already been registered/i, 'Ya existe una cuenta con ese correo. Inicia sesión o recupera la contraseña.'],
     [/password should be at least|weak password|password is too weak/i, 'La contraseña es demasiado débil: usa al menos 8 caracteres con letras y números.'],
-    [/rate limit|too many requests|over_email_send_rate_limit/i, 'Demasiados intentos. Espera unos minutos y vuelve a probar.'],
+    [/over_email_send_rate_limit|email rate limit/i, 'El servidor ha enviado demasiados correos en la última hora. Inténtalo más tarde.'],
+    [/rate limit|too many requests/i, 'Demasiados intentos. Espera unos minutos y vuelve a probar.'],
     [/same.*password|different from the old/i, 'La nueva contraseña debe ser distinta de la anterior.'],
     [/failed to fetch|network|load failed/i, 'Sin conexión con el servidor. Comprueba tu internet.'],
     [/expired|invalid.*(token|link)|otp/i, 'El enlace ha caducado o ya se usó. Pide uno nuevo.'],
@@ -355,6 +363,14 @@ async function cargarPerfil() {
 
 async function entrarConSesion(s) {
   usuario = { id: s.user.id, email: s.user.email };
+  const aal = await nivelVerificacion();
+  if (aal.nextLevel === 'aal2' && aal.currentLevel !== 'aal2') {
+    pantallaCodigoMfa(async () => {
+      const { data } = await sb.auth.getSession();
+      if (data.session) await entrarConSesion(data.session); else pantallaLogin();
+    });
+    return;
+  }
   try {
     await cargarPerfil();
   } catch (e) {
@@ -380,6 +396,147 @@ async function cerrarSesion() {
   usuario = null; perfil = null;
   try { await sb.auth.signOut(); } catch { /* sin conexión: se borra la sesión local igualmente */ }
   pantallaLogin({ info: 'Has cerrado sesión.' });
+}
+
+/* ---------- verificación en dos pasos (TOTP) ---------- */
+
+async function nivelVerificacion() {
+  try { const { data } = await sb.auth.mfa.getAuthenticatorAssuranceLevel(); return data || {}; } catch { return {}; }
+}
+
+async function factoresTotp() {
+  const { data, error } = await sb.auth.mfa.listFactors();
+  if (error) throw error;
+  return { verificados: data.totp || [], todos: data.all || [] };
+}
+
+/** Pide el código de 6 dígitos y, si es correcto, sigue con `continuar`. */
+function pantallaCodigoMfa(continuar) {
+  pararTimer();
+  const btn = h('button', { class: 'btn primary block', type: 'submit' }, 'Verificar');
+  const zonaAviso = h('div');
+  const form = h('form', {
+    class: 'form', novalidate: true,
+    onsubmit: async e => {
+      e.preventDefault();
+      const codigo = form.codigo.value.replace(/\s/g, '');
+      if (!/^\d{6}$/.test(codigo)) { zonaAviso.replaceChildren(aviso('error', 'El código tiene 6 números.')); return; }
+      botonCargando(btn, true, 'Verificando…');
+      try {
+        const { verificados } = await factoresTotp();
+        if (!verificados.length) { await continuar(); return; }
+        const { error } = await sb.auth.mfa.challengeAndVerify({ factorId: verificados[0].id, code: codigo });
+        if (error) throw error;
+        await continuar();
+      } catch (err) {
+        botonCargando(btn, false);
+        form.codigo.value = '';
+        zonaAviso.replaceChildren(aviso('error', traducirError(err)));
+      }
+    },
+  },
+  zonaAviso,
+  campo('codigo', 'Código de 6 dígitos', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 7, pattern: '[0-9 ]*', required: true }),
+  btn);
+  render(marcoAcceso('Verificación en dos pasos', 'Abre tu app de autenticación y escribe el código de Test CAP.',
+    form,
+    h('p', { class: 'auth-alt' },
+      h('button', { class: 'btn link', type: 'button', onclick: cerrarSesion }, 'Cerrar sesión'))));
+  setTimeout(() => form.codigo && form.codigo.focus(), 50);
+}
+
+/** Tarjeta de "Mi cuenta" para activar o desactivar la verificación. */
+async function seccionMfa(zona) {
+  zona.replaceChildren(h('p', { class: 'muted small' }, 'Comprobando…'));
+  let f;
+  try { f = await factoresTotp(); } catch (e) { zona.replaceChildren(aviso('error', traducirError(e))); return; }
+  const esAdmin = perfil && perfil.rol === 'admin';
+  if (f.verificados.length) {
+    const factor = f.verificados[0];
+    const btn = h('button', { class: 'btn danger', type: 'button' }, 'Desactivar');
+    btn.addEventListener('click', async () => {
+      const texto = esAdmin && MFA_OBLIGATORIA_ADMIN
+        ? '¿Desactivar la verificación en dos pasos? Perderás el acceso al panel de administración hasta que la vuelvas a activar.'
+        : '¿Desactivar la verificación en dos pasos? Tu cuenta quedará protegida solo con la contraseña.';
+      if (!(await confirmar(texto, 'Desactivar', 'Cancelar', true))) return;
+      botonCargando(btn, true);
+      const { error } = await sb.auth.mfa.unenroll({ factorId: factor.id });
+      if (error) { botonCargando(btn, false); toast(traducirError(error), 6000); return; }
+      await sb.auth.refreshSession().catch(() => {});
+      toast('Verificación en dos pasos desactivada.');
+      seccionMfa(zona);
+    });
+    zona.replaceChildren(
+      h('div', { class: 'spread' },
+        h('div', {}, h('span', { class: 'pill pill-ok' }, 'Activada'),
+          h('p', { class: 'muted small', style: 'margin-top:8px' }, `Desde el ${fechaES(factor.created_at)}. Al iniciar sesión se pide el código de tu app de autenticación.`)),
+        btn));
+    return;
+  }
+  // Solo los administradores pueden activarla; a un usuario normal sin verificación no se le muestra.
+  if (!esAdmin) { const tarjeta = zona.closest('section'); if (tarjeta) tarjeta.remove(); return; }
+  const btn = h('button', { class: 'btn primary', type: 'button' }, 'Activar');
+  btn.addEventListener('click', () => activarMfa(zona, f.todos));
+  zona.replaceChildren(
+    aviso('info', 'Protege el panel de administración aunque alguien consiga tu contraseña.'),
+    h('p', { class: 'small' }, 'Además de la contraseña, al entrar se pedirá un código de 6 números que cambia cada 30 segundos en una app de autenticación (Google Authenticator, Microsoft Authenticator o Aegis).'),
+    h('div', { class: 'row' }, btn));
+}
+
+async function activarMfa(zona, todos) {
+  zona.replaceChildren(h('p', { class: 'muted small' }, 'Preparando…'));
+  // Un intento anterior sin terminar deja un factor "unverified": se borra antes de empezar.
+  for (const f of todos.filter(x => x.status !== 'verified')) await sb.auth.mfa.unenroll({ factorId: f.id }).catch(() => {});
+  const { data, error } = await sb.auth.mfa.enroll({ factorType: 'totp', friendlyName: 'App de autenticación' });
+  if (error) { zona.replaceChildren(aviso('error', traducirError(error))); return; }
+  const { id, totp } = data;
+  const claveLegible = totp.secret.replace(/(.{4})/g, '$1 ').trim();
+  const claveTxt = h('code', { class: 'clave-totp' }, claveLegible);
+  const btnCopiar = h('button', { class: 'btn sm', type: 'button' }, 'Copiar clave');
+  btnCopiar.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(totp.secret); toast('Clave copiada.'); }
+    catch {
+      const r = document.createRange(); r.selectNodeContents(claveTxt);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      toast('Mantén pulsado para copiar la clave seleccionada.');
+    }
+  });
+  const btnVerif = h('button', { class: 'btn primary', type: 'submit' }, 'Activar');
+  const zonaAviso = h('div');
+  const form = h('form', {
+    class: 'form', novalidate: true,
+    onsubmit: async e => {
+      e.preventDefault();
+      const codigo = form.codigo.value.replace(/\s/g, '');
+      if (!/^\d{6}$/.test(codigo)) { zonaAviso.replaceChildren(aviso('error', 'El código tiene 6 números.')); return; }
+      botonCargando(btnVerif, true, 'Comprobando…');
+      const { error: err } = await sb.auth.mfa.challengeAndVerify({ factorId: id, code: codigo });
+      if (err) { botonCargando(btnVerif, false); zonaAviso.replaceChildren(aviso('error', traducirError(err))); return; }
+      toast('Verificación en dos pasos activada.', 5000);
+      seccionMfa(zona);
+    },
+  }, zonaAviso,
+  campo('codigo', 'Código que muestra la app', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 7, pattern: '[0-9 ]*' }),
+  h('div', { class: 'row end' },
+    h('button', {
+      class: 'btn', type: 'button',
+      onclick: async () => { await sb.auth.mfa.unenroll({ factorId: id }).catch(() => {}); seccionMfa(zona); },
+    }, 'Cancelar'),
+    btnVerif));
+
+  zona.replaceChildren(
+    h('ol', { class: 'steps' },
+      h('li', {}, 'Instala una app de autenticación si no tienes ninguna: Google Authenticator, Microsoft Authenticator o Aegis.'),
+      h('li', {}, 'Añade Test CAP a la app:',
+        h('div', { class: 'row', style: 'margin:8px 0' },
+          h('a', { class: 'btn', href: totp.uri }, 'Abrir en la app de autenticación')),
+        h('div', { class: 'small muted' }, 'Si el botón no abre la app, añade la cuenta a mano con esta clave:'),
+        h('div', { class: 'row', style: 'margin-top:6px' }, claveTxt, btnCopiar)),
+      h('li', {}, 'Guarda la clave en un lugar seguro: te servirá si cambias de móvil.'),
+      h('li', {}, 'Escribe el código de 6 números que aparece en la app.')),
+    h('details', { class: 'small' }, h('summary', {}, 'Tengo la app en otro dispositivo (código QR)'),
+      h('img', { class: 'qr', src: totp.qr_code, alt: 'Código QR para la app de autenticación', width: 180, height: 180 })),
+    form);
 }
 
 /* ---------- pantallas de acceso ---------- */
@@ -466,7 +623,8 @@ function pantallaLogin({ error, info, email = '' } = {}) {
   render(marcoAcceso('Iniciar sesión', 'Entra con tu cuenta para hacer tests y guardar tu progreso.',
     form,
     h('p', { class: 'auth-alt' }, '¿No tienes cuenta? ',
-      h('button', { class: 'btn link', type: 'button', onclick: () => pantallaRegistro(form.email.value.trim()) }, 'Crear cuenta'))));
+      h('button', { class: 'btn link', type: 'button', onclick: () => pantallaRegistro(form.email.value.trim()) }, 'Crear cuenta')),
+    h('p', { class: 'auth-alt small' }, h('a', { href: 'privacidad.html' }, 'Política de privacidad'))));
 }
 
 function pantallaRegistro(email = '') {
@@ -505,7 +663,9 @@ function pantallaRegistro(email = '') {
   h('p', { class: 'hint' }, 'Mínimo 8 caracteres, con letras y números.'),
   campo('password2', 'Repite la contraseña', { type: 'password', autocomplete: 'new-password', required: true }),
   h('label', { class: 'check' }, acepto,
-    h('span', { class: 'small' }, 'Acepto que se guarden mi correo, mi nombre y mis resultados para usar la app.')),
+    h('span', { class: 'small' }, 'He leído y acepto la ',
+      h('a', { href: 'privacidad.html', target: '_blank', rel: 'noopener' }, 'política de privacidad'),
+      ': se guardan mi correo, mi nombre y mis resultados para usar la app.')),
   btn);
 
   render(marcoAcceso('Crear cuenta', 'Es gratis. Solo necesitas un correo.',
@@ -542,8 +702,9 @@ function pantallaRecuperar(email = '') {
       h('button', { class: 'btn link', type: 'button', onclick: () => pantallaLogin({ email: form.email.value.trim() }) }, '← Volver a iniciar sesión'))));
 }
 
-function pantallaNuevaClave() {
-  const btn = h('button', { class: 'btn primary block', type: 'submit' }, 'Guardar contraseña');
+/** Nueva contraseña: tras un enlace de recuperación o, con `invitacion`, la primera vez que entra un invitado. */
+function pantallaNuevaClave(invitacion = false) {
+  const btn = h('button', { class: 'btn primary block', type: 'submit' }, invitacion ? 'Crear contraseña y entrar' : 'Guardar contraseña');
   const zonaAviso = h('div');
   const form = h('form', {
     class: 'form', novalidate: true,
@@ -557,7 +718,8 @@ function pantallaNuevaClave() {
       botonCargando(btn, false);
       if (error) { zonaAviso.replaceChildren(aviso('error', traducirError(error))); return; }
       enRecuperacion = false;
-      toast('Contraseña cambiada.');
+      lsDel('cap.claveInvitacionPendiente');
+      toast(invitacion ? 'Contraseña creada. ¡Bienvenido!' : 'Contraseña cambiada.');
       const { data } = await sb.auth.getSession();
       if (data.session) await entrarConSesion(data.session); else pantallaLogin({ info: 'Contraseña cambiada. Inicia sesión.' });
     },
@@ -567,8 +729,46 @@ function pantallaNuevaClave() {
   h('p', { class: 'hint' }, 'Mínimo 8 caracteres, con letras y números.'),
   campo('password2', 'Repite la contraseña', { type: 'password', autocomplete: 'new-password', required: true }),
   btn);
-  render(marcoAcceso('Nueva contraseña', 'Escribe la contraseña que quieres usar a partir de ahora.', form));
+  render(invitacion
+    ? marcoAcceso('Crea tu contraseña', 'Te han invitado a Test CAP. Elige la contraseña con la que entrarás a partir de ahora.', form,
+      h('p', { class: 'auth-alt' }, h('button', { class: 'btn link', type: 'button', onclick: cerrarSesion }, 'Ahora no')))
+    : marcoAcceso('Nueva contraseña', 'Escribe la contraseña que quieres usar a partir de ahora.', form));
 }
+
+/* ---------- la cuenta sigue existiendo y activa ---------- */
+
+let comprobandoCuenta = false;
+/** Pregunta al servidor si la cuenta sigue existiendo y activa; si no, cierra la sesión en este dispositivo. */
+async function comprobarCuentaViva() {
+  if (!usuario || comprobandoCuenta || !navigator.onLine || !sb) return;
+  comprobandoCuenta = true;
+  try {
+    let motivo = null;
+    const { error } = await sb.auth.getUser();
+    if (error) {
+      // Sin conexión o fallo del servidor: no se expulsa a nadie por eso.
+      if (![401, 403, 404].includes(error.status) && !/not exist|not found|banned/i.test(error.message || '')) return;
+      motivo = 'Tu cuenta ya no está disponible. Si crees que es un error, contacta con el administrador.';
+    } else {
+      const { data: p, error: e2 } = await sb.from('perfiles').select('activo').eq('id', usuario.id).maybeSingle();
+      if (e2) return;
+      if (!p) motivo = 'Tu cuenta ha sido eliminada.';
+      else if (!p.activo) motivo = 'Tu cuenta ha sido desactivada. Contacta con el administrador.';
+    }
+    if (motivo) await expulsar(motivo);
+  } finally { comprobandoCuenta = false; }
+}
+
+async function expulsar(motivo) {
+  pararTimer();
+  session = null; usuario = null; perfil = null; // antes de signOut, para que no salte otro aviso
+  try { await sb.auth.signOut({ scope: 'local' }); } catch { /* se borra la sesión local igualmente */ }
+  pantallaLogin({ error: motivo });
+}
+
+setInterval(comprobarCuentaViva, 2 * 60 * 1000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') comprobarCuentaViva(); });
+window.addEventListener('online', comprobarCuentaViva);
 
 /* ---------- cabecera y menú de cuenta ---------- */
 
@@ -730,8 +930,10 @@ function tarjetaInstalar() {
   try { incrustada = window.self !== window.top; } catch { incrustada = true; }
   if (standalone || incrustada || window.Capacitor) return null;
   const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const android = /android/i.test(navigator.userAgent);
   return h('section', { class: 'card card-soft' },
     h('h2', {}, 'Instala la app'),
+    android ? h('p', { class: 'small' }, h('a', { class: 'btn', href: 'dist/test-cap.apk', download: 'test-cap.apk' }, 'Descargar la app para Android (APK)')) : null,
     ios
       ? h('p', { class: 'small' }, 'En Safari, pulsa Compartir y después "Añadir a pantalla de inicio".')
       : installPrompt
@@ -920,21 +1122,13 @@ function pantallaTest() {
         h('strong', {}, elegida === q.r ? 'Correcta' : `Incorrecta · la buena es la ${q.r}`),
         q.n ? h('span', { class: 'small' }, `Norma: ${q.n}`) : null) : null,
       session.feedback === 'final' && elegida ? h('p', { class: 'muted small' }, 'Pulsa otra vez tu respuesta para dejarla en blanco.') : null),
-    h('div', { class: 'row end' },
+    h('div', { class: 'row test-nav' },
+      ultima ? null : h('button', { class: 'btn danger', type: 'button', onclick: confirmarTerminar }, 'Terminar test'),
+      h('span', { class: 'grow' }),
       h('button', { class: 'btn', type: 'button', disabled: session.idx === 0, onclick: () => ir(session.idx - 1) }, 'Anterior'),
       ultima
         ? h('button', { class: 'btn primary', type: 'button', onclick: confirmarTerminar }, 'Terminar test')
-        : h('button', { class: 'btn primary', type: 'button', onclick: () => ir(session.idx + 1) }, elegida ? 'Siguiente' : 'Saltar')),
-    h('section', { class: 'card' },
-      h('div', { class: 'spread' }, h('h2', {}, 'Preguntas'),
-        h('button', { class: 'btn danger', type: 'button', onclick: confirmarTerminar }, 'Terminar test')),
-      h('div', { class: 'palette' }, session.ids.map((cc, i) => {
-        const r = session.respuestas[cc];
-        let cls = r ? 'answered' : '';
-        if (r && session.feedback === 'inmediato') cls = r === porCodigo.get(cc).r ? 'correct' : 'wrong';
-        if (i === session.idx) cls += ' current';
-        return h('button', { type: 'button', class: cls, onclick: () => ir(i), 'aria-label': `Pregunta ${i + 1}` }, i + 1);
-      }))));
+        : h('button', { class: 'btn primary', type: 'button', onclick: () => ir(session.idx + 1) }, elegida ? 'Siguiente' : 'Saltar')));
 }
 
 async function confirmarTerminar() {
@@ -1070,6 +1264,8 @@ async function pantallaHistorial() {
 
 function pantallaPerfil() {
   const zona1 = h('div'), zona2 = h('div');
+  const zonaMfa = h('div');
+  setTimeout(() => seccionMfa(zonaMfa), 0);
   const btn1 = h('button', { class: 'btn primary', type: 'submit' }, 'Guardar nombre');
   const f1 = h('form', {
     class: 'form', novalidate: true,
@@ -1111,33 +1307,116 @@ function pantallaPerfil() {
       h('p', { class: 'muted' }, usuario.email, perfil.rol === 'admin' ? ' · Administrador' : '')),
     h('section', { class: 'card' }, h('h2', {}, 'Datos'), f1),
     h('section', { class: 'card' }, h('h2', {}, 'Contraseña'), f2),
+    h('section', { class: 'card' }, h('h2', {}, 'Verificación en dos pasos'), zonaMfa),
     h('section', { class: 'card' }, h('h2', {}, 'Sesión'),
       h('p', { class: 'muted small' }, 'Cierra la sesión en este dispositivo.'),
-      h('button', { class: 'btn danger', type: 'button', onclick: cerrarSesion }, 'Cerrar sesión')));
+      h('button', { class: 'btn danger', type: 'button', onclick: cerrarSesion }, 'Cerrar sesión')),
+    h('section', { class: 'card' }, h('h2', {}, 'Privacidad y datos'),
+      h('p', { class: 'small' }, 'Consulta qué datos guardamos y para qué en la ',
+        h('a', { href: 'privacidad.html' }, 'política de privacidad'), '.'),
+      h('p', { class: 'muted small' }, 'Eliminar la cuenta borra para siempre tu perfil y todos tus resultados. No se puede deshacer.'),
+      h('button', { class: 'btn danger', type: 'button', onclick: eliminarMiCuenta }, 'Eliminar mi cuenta')));
+}
+
+/** Baja de la cuenta (spec 004): contraseña actual + escribir ELIMINAR; se comprueba en el servidor. */
+function eliminarMiCuenta() {
+  const pass = h('input', { id: 'baja-password', type: 'password', autocomplete: 'current-password' });
+  const texto = h('input', { id: 'baja-confirmar', type: 'text', autocomplete: 'off', placeholder: 'ELIMINAR' });
+  const zonaAviso = h('div');
+  const btnOk = h('button', { class: 'btn danger-solid', type: 'submit' }, 'Eliminar mi cuenta');
+  const cerrar = () => capa.remove();
+  const form = h('form', {
+    class: 'form', novalidate: true,
+    onsubmit: async e => {
+      e.preventDefault();
+      if (texto.value.trim().toUpperCase() !== 'ELIMINAR') { zonaAviso.replaceChildren(aviso('error', 'Escribe ELIMINAR para confirmar.')); return; }
+      if (!pass.value) { zonaAviso.replaceChildren(aviso('error', 'Escribe tu contraseña.')); return; }
+      botonCargando(btnOk, true, 'Eliminando…');
+      try {
+        await llamarFuncion('mi-cuenta', { accion: 'eliminar', password: pass.value, confirmacion: 'ELIMINAR' });
+      } catch (err) {
+        botonCargando(btnOk, false);
+        zonaAviso.replaceChildren(aviso('error', traducirError(err)));
+        return;
+      }
+      const id = usuario.id;
+      cerrar();
+      ['cap.prefs', 'cap.stats', 'cap.session', 'cap.cola', 'cap.perfil'].forEach(k => lsDel(`${k}.${id}`));
+      await expulsar('Tu cuenta y tus datos se han eliminado.');
+    },
+  },
+  h('p', {}, h('strong', {}, 'Se borrarán para siempre tu cuenta, tu perfil y todos tus resultados.')),
+  zonaAviso,
+  h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Tu contraseña'), h('span', { class: 'field-input' }, pass)),
+  h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Escribe ELIMINAR para confirmar'), h('span', { class: 'field-input' }, texto)),
+  h('div', { class: 'row end' }, h('button', { class: 'btn', type: 'button', onclick: cerrar }, 'Cancelar'), btnOk));
+  const capa = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, h('div', { class: 'card modal-card' }, h('h2', {}, 'Eliminar mi cuenta'), form));
+  document.body.append(capa);
+  pass.focus();
+}
+
+/** Muestra un enlace de acceso para mandarlo por un canal privado (spec 004). */
+function mostrarEnlace(titulo, explicacion, enlace) {
+  const campoEnlace = h('textarea', { id: 'enlace-acceso', class: 'enlace', readonly: true, rows: 4 }, enlace);
+  const btnCopiar = h('button', { class: 'btn primary', type: 'button' }, 'Copiar enlace');
+  btnCopiar.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(enlace); toast('Enlace copiado.'); }
+    catch { campoEnlace.focus(); campoEnlace.select(); toast('Mantén pulsado para copiar el enlace seleccionado.'); }
+  });
+  const btnCompartir = navigator.share ? h('button', {
+    class: 'btn', type: 'button',
+    onclick: () => navigator.share({ title: 'Test CAP', text: enlace }).catch(() => {}),
+  }, 'Compartir') : null;
+  const capa = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' },
+    h('div', { class: 'card modal-card' },
+      h('h2', {}, titulo),
+      h('p', { class: 'small' }, explicacion),
+      aviso('info', 'Este enlace da acceso a la cuenta: mándalo solo a esa persona, por un canal privado (por ejemplo, WhatsApp). Caduca pronto (normalmente en 1 hora) y solo sirve una vez.'),
+      campoEnlace,
+      h('div', { class: 'row end' },
+        h('button', { class: 'btn', type: 'button', onclick: () => capa.remove() }, 'Cerrar'), btnCompartir, btnCopiar)));
+  document.body.append(capa);
+}
+
+async function pedirEnlace(email, nombre = '') {
+  const r = await llamarAdmin({ accion: 'enlace', email, nombre, redirectTo: redirectApp() });
+  if (r.tipo === 'invite') {
+    mostrarEnlace('Enlace de invitación', `Al abrirlo, ${email} creará su contraseña y entrará en la app. No se ha enviado ningún correo.`, r.enlace);
+  } else {
+    mostrarEnlace('Enlace para cambiar la contraseña', `${email} ya tiene cuenta. Con este enlace podrá poner una contraseña nueva. No se ha enviado ningún correo.`, r.enlace);
+  }
 }
 
 /* ---------- administración ---------- */
 
-async function llamarAdmin(body) {
-  const { data, error } = await sb.functions.invoke('admin-usuarios', { body });
-  if (error) {
-    let msg = error.message;
-    try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch { /* sin cuerpo */ }
-    throw new Error(msg);
-  }
-  return data;
-}
+const llamarAdmin = body => llamarFuncion('admin-usuarios', body);
 
 function pantallaAdmin(pestana = 'resumen') {
   if (!perfil || perfil.rol !== 'admin') return pantallaInicio();
   const tabs = { resumen: ['grafico', 'Resumen'], usuarios: ['usuarios', 'Usuarios'], resultados: ['historial', 'Resultados'], banco: ['banco', 'Banco de preguntas'] };
   const cont = h('div');
+  const zonaMfa = h('div');
   render(
     h('div', { class: 'page-head' }, h('p', { class: 'eyebrow' }, 'Administración'), h('h1', {}, tabs[pestana][1])),
+    zonaMfa,
     h('div', { class: 'tabs', role: 'tablist' }, Object.entries(tabs).map(([k, [ico, txt]]) =>
       h('button', { type: 'button', role: 'tab', 'aria-selected': String(k === pestana), onclick: () => pantallaAdmin(k) }, icono(ico), txt))),
     cont);
-  ({ resumen: adminResumen, usuarios: adminUsuarios, resultados: adminResultados, banco: adminBanco })[pestana](cont);
+  cont.replaceChildren(h('p', { class: 'muted' }, 'Comprobando la verificación…'));
+  // Se comprueba ANTES de cargar nada: con la fase B activa, sin sesión verificada no se pide ningún dato.
+  nivelVerificacion().then(aal => {
+    if (!zonaMfa.isConnected) return;
+    const verificada = aal.currentLevel === 'aal2';
+    if (!verificada) {
+      zonaMfa.replaceChildren(h('div', { class: 'alert ' + (MFA_OBLIGATORIA_ADMIN ? 'error' : 'info'), style: 'margin-bottom:16px' },
+        MFA_OBLIGATORIA_ADMIN
+          ? 'El panel de administración exige la verificación en dos pasos. Actívala en Mi cuenta y vuelve a entrar.'
+          : 'Protege el panel: activa la verificación en dos pasos en Mi cuenta. Pronto será obligatoria para administradores.',
+        ' ', h('button', { class: 'btn link', type: 'button', onclick: pantallaPerfil }, 'Ir a Mi cuenta')));
+      if (MFA_OBLIGATORIA_ADMIN) { cont.replaceChildren(); return; }
+    }
+    ({ resumen: adminResumen, usuarios: adminUsuarios, resultados: adminResultados, banco: adminBanco })[pestana](cont);
+  });
 }
 
 async function adminResumen(cont) {
@@ -1167,7 +1446,7 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
     }, h('span', { class: 'field-input grow' }, buscar), h('button', { class: 'btn primary', type: 'submit' }, 'Buscar')),
     h('section', { class: 'card' }, lista),
     h('section', { class: 'card' }, h('h2', {}, 'Invitar a un usuario'),
-      h('p', { class: 'muted small' }, 'Le llega un correo para crear su contraseña.'),
+      h('p', { class: 'muted small' }, 'Envía la invitación por correo o copia un enlace para mandarlo tú (no gasta el cupo de correos).'),
       h('form', {
         class: 'toolbar', onsubmit: async e => {
           e.preventDefault();
@@ -1175,10 +1454,25 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
           if (!correoValido(email)) return toast('Escribe un correo válido.');
           botonCargando(btnInv, true, 'Enviando…');
           try { await llamarAdmin({ accion: 'invitar', email, nombre: invNombre.value.trim(), redirectTo: redirectApp() }); toast(`Invitación enviada a ${email}.`); invEmail.value = ''; invNombre.value = ''; }
-          catch (err) { toast(traducirError(err)); }
+          catch (err) {
+            const txt = traducirError(err);
+            toast(/correos en la última hora/.test(txt) ? `${txt} Mientras tanto, usa "Copiar enlace".` : txt, 7000);
+          }
           botonCargando(btnInv, false);
         },
-      }, h('span', { class: 'field-input grow' }, invEmail), h('span', { class: 'field-input grow' }, invNombre), btnInv)));
+      }, h('span', { class: 'field-input grow' }, invEmail), h('span', { class: 'field-input grow' }, invNombre), btnInv,
+      h('button', {
+        class: 'btn', type: 'button', id: 'btn-copiar-enlace',
+        onclick: async ev => {
+          const email = invEmail.value.trim().toLowerCase();
+          if (!correoValido(email)) return toast('Escribe un correo válido.');
+          botonCargando(ev.currentTarget, true, 'Generando…');
+          const b = ev.currentTarget;
+          try { await pedirEnlace(email, invNombre.value.trim()); invEmail.value = ''; invNombre.value = ''; }
+          catch (err) { toast(traducirError(err), 7000); }
+          botonCargando(b, false);
+        },
+      }, 'Copiar enlace'))));
 
   let consulta = sb.from('perfiles').select('id, email, nombre, rol, activo, creado, ultimo_acceso', { count: 'exact' })
     .order('creado', { ascending: false }).range(pagina * POR_PAGINA, pagina * POR_PAGINA + POR_PAGINA - 1);
@@ -1222,6 +1516,19 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
           },
         }, 'Enviar recuperación'),
         h('button', {
+          class: 'btn sm', type: 'button', disabled: yo || !u.activo,
+          onclick: async ev => {
+            const b = ev.currentTarget; botonCargando(b, true, 'Generando…');
+            try { await pedirEnlace(u.email); } catch (err) { toast(traducirError(err), 7000); }
+            botonCargando(b, false);
+          },
+        }, 'Copiar enlace de acceso'),
+        h('button', {
+          class: 'btn sm', type: 'button', disabled: yo,
+          onclick: () => accion(`¿Quitar la verificación en dos pasos de ${u.email}? Podrá entrar solo con su contraseña y, si es administrador, tendrá que volver a activarla para usar el panel.`,
+            { accion: 'quitar_mfa', id: u.id }, true),
+        }, 'Quitar verificación en dos pasos'),
+        h('button', {
           class: 'btn sm danger', type: 'button', disabled: yo || u.rol === 'admin',
           onclick: () => accion(`¿Eliminar la cuenta de ${u.email} y todos sus resultados? No se puede deshacer.`, { accion: 'eliminar', id: u.id }, true),
         }, 'Eliminar')));
@@ -1244,46 +1551,165 @@ async function adminResultados(cont) {
   cont.replaceChildren(h('section', { class: 'card' }, h('h2', {}, 'Últimos 100 tests'), tablaResultados(data, true)));
 }
 
-function adminBanco(cont) {
-  const cambio = lsGet('cap.banco.ultimoCambio', null);
+function pedirTexto(mensaje, esperado) {
+  return new Promise(resolve => {
+    const input = h('input', { id: 'confirmar-texto', type: 'text', autocomplete: 'off', placeholder: esperado });
+    const cerrar = v => { capa.remove(); resolve(v); };
+    const capa = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' },
+      h('div', { class: 'card modal-card' },
+        h('p', {}, mensaje),
+        h('label', { class: 'field' }, h('span', { class: 'field-label' }, `Escribe ${esperado} para confirmar`), h('span', { class: 'field-input' }, input)),
+        h('div', { class: 'row end' },
+          h('button', { class: 'btn', type: 'button', onclick: () => cerrar(false) }, 'Cancelar'),
+          h('button', { class: 'btn danger-solid', type: 'button', onclick: () => cerrar(input.value.trim().toUpperCase() === esperado) }, 'Publicar'))));
+    document.body.append(capa);
+    input.focus();
+  });
+}
+
+function archivoBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
+
+async function llamarFuncion(nombre, body) {
+  const { data, error } = await sb.functions.invoke(nombre, { body });
+  if (error) {
+    let msg = error.message;
+    try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch { /* sin cuerpo */ }
+    throw new Error(msg);
+  }
+  return data;
+}
+
+const ESTADO_VERSION = { publicada: ['pill-ok', 'Publicada'], publicando: ['pill-admin', 'Publicando…'], fallida: ['pill-bad', 'Fallida'] };
+
+let sondeoBanco = null;
+async function adminBanco(cont) {
+  clearTimeout(sondeoBanco);
+  const zonaCandidato = h('div');
+  const zonaVersiones = h('div', {}, h('p', { class: 'muted' }, 'Cargando versiones…'));
   const input = h('input', {
     type: 'file', accept: '.zip,application/zip', class: 'hidden',
     onchange: async e => {
       const f = e.target.files[0]; e.target.value = '';
       if (!f) return;
-      toast('Leyendo ZIP…');
-      try { const diff = await importarZip(f); toast(`ZIP válido: ${banco.total} preguntas (${resumenCambios(diff)}).`, 6000); adminBanco(cont); }
-      catch (err) { toast(err.message, 8000); }
+      zonaCandidato.replaceChildren(h('section', { class: 'card' }, h('p', { class: 'muted' }, `Leyendo y validando ${f.name}…`)));
+      try { mostrarCandidato(f, await leerZip(f)); }
+      catch (err) { zonaCandidato.replaceChildren(h('section', { class: 'card' }, aviso('error', 'No se puede publicar: ' + err.message))); }
     },
   });
+
+  function mostrarCandidato(file, nuevo) {
+    const diff = compararBancos(banco, nuevo);
+    const riesgo = (diff.eliminadas + diff.cambiaRespuesta) / Math.max(1, banco.total);
+    const igual = nuevo.version === banco.version;
+    const fila = (t, v, cls = '') => h('tr', {}, h('td', {}, t), h('td', { class: 'num ' + cls }, v.toLocaleString('es-ES')));
+    const btnPub = h('button', { class: 'btn primary', type: 'button', disabled: igual }, 'Publicar para todos');
+    btnPub.addEventListener('click', async () => {
+      const ok = riesgo > 0.10
+        ? await pedirTexto(`Este banco elimina o cambia la respuesta de ${diff.eliminadas + diff.cambiaRespuesta} preguntas (${fmt(riesgo * 100)} %). Es un cambio grande: revisa que el ZIP sea el correcto.`, 'PUBLICAR')
+        : await confirmar(`¿Publicar este banco (${nuevo.total.toLocaleString('es-ES')} preguntas) para todos los usuarios?`, 'Publicar');
+      if (!ok) return;
+      botonCargando(btnPub, true, 'Publicando…');
+      try {
+        await llamarFuncion('publicar-banco', {
+          accion: 'publicar', zip: await archivoBase64(file), version: nuevo.version,
+          total: nuevo.total, fechaFuente: nuevo.fechaFuente, cambios: diff,
+        });
+        toast('Banco enviado. GitHub lo publicará en unos minutos.', 6000);
+        zonaCandidato.replaceChildren();
+        cargarVersiones();
+      } catch (err) { toast(err.message, 8000); botonCargando(btnPub, false); }
+    });
+    zonaCandidato.replaceChildren(h('section', { class: 'card card-accent' },
+      h('div', { class: 'spread' }, h('h2', {}, 'ZIP validado'), h('span', { class: 'pill pill-ok' }, 'Sin errores')),
+      h('p', { class: 'muted small' }, `${file.name} · fuente del ${fechaES(nuevo.fechaFuente)} · versión ${nuevo.version}`),
+      igual ? aviso('info', 'Este ZIP tiene exactamente las mismas preguntas que el banco actual. No hay nada que publicar.') : null,
+      riesgo > 0.10 ? aviso('error', `Atención: cambio grande (${fmt(riesgo * 100)} % de preguntas eliminadas o con otra respuesta).`) : null,
+      h('div', { class: 'table-wrap' }, h('table', { class: 'table' }, h('tbody', {},
+        fila('Preguntas en el ZIP', nuevo.total),
+        fila('Nuevas', diff.nuevas, diff.nuevas ? 'txt-ok' : ''),
+        fila('Eliminadas', diff.eliminadas, diff.eliminadas ? 'txt-bad' : ''),
+        fila('Con la respuesta cambiada', diff.cambiaRespuesta, diff.cambiaRespuesta ? 'txt-bad' : ''),
+        fila('Con el texto corregido', diff.cambiaTexto)))),
+      h('div', { class: 'row end' },
+        h('button', { class: 'btn', type: 'button', onclick: () => zonaCandidato.replaceChildren() }, 'Cancelar'), btnPub)));
+  }
+
+  async function cargarVersiones() {
+    clearTimeout(sondeoBanco);
+    let { data, error } = await sb.from('banco_versiones')
+      .select('id, version, archivo, fecha_fuente, total, cambios, estado, mensaje, creado, perfiles(nombre, email)')
+      .order('creado', { ascending: false }).limit(20);
+    if (error) { zonaVersiones.replaceChildren(aviso('error', traducirError(error))); return; }
+    if (data.some(v => v.estado === 'publicando')) {
+      try { await llamarFuncion('publicar-banco', { accion: 'comprobar' }); } catch { /* se reintenta */ }
+      ({ data } = await sb.from('banco_versiones')
+        .select('id, version, archivo, fecha_fuente, total, cambios, estado, mensaje, creado, perfiles(nombre, email)')
+        .order('creado', { ascending: false }).limit(20));
+    }
+    const activa = data.find(v => v.estado === 'publicada');
+    zonaVersiones.replaceChildren(
+      h('div', { class: 'spread' }, h('h2', {}, 'Versiones publicadas'), h('span', { class: 'muted small' }, 'Las 20 últimas')),
+      ...data.map(v => {
+        const [cls, txt] = ESTADO_VERSION[v.estado] || ['', v.estado];
+        const c = v.cambios || {};
+        const resumen = c.restaurada_desde ? `Vuelta a la versión #${c.restaurada_desde}`
+          : ('nuevas' in c) ? resumenCambios(c) : '';
+        const esActiva = activa && v.id === activa.id;
+        return h('div', { class: 'version-row' },
+          h('div', { class: 'user-main' },
+            h('div', { class: 'user-name' }, `#${v.id} · ${v.total.toLocaleString('es-ES')} preguntas`,
+              esActiva ? h('span', { class: 'pill pill-ok', style: 'margin-left:8px' }, 'Activa') : null),
+            h('div', { class: 'muted small' }, `Fuente del ${fechaES(v.fecha_fuente)} · versión `, h('span', { class: 'mono' }, v.version)),
+            h('div', { class: 'muted small' }, `${fechaES(v.creado, true)}${v.perfiles ? ' · ' + (v.perfiles.nombre || v.perfiles.email) : ''}`),
+            resumen ? h('div', { class: 'small' }, resumen) : null,
+            v.mensaje ? h('div', { class: 'muted small' }, v.mensaje) : null),
+          h('div', { class: 'user-tags' }, h('span', { class: 'pill ' + cls }, txt)),
+          v.estado === 'publicada' && !esActiva && activa && v.version !== activa.version
+            ? h('div', { class: 'user-actions' }, h('button', {
+              class: 'btn sm', type: 'button',
+              onclick: async () => {
+                if (!(await confirmar(`¿Volver a la versión #${v.id} (${v.total} preguntas)? Todos los usuarios la recibirán en unos minutos.`, 'Volver a esta versión'))) return;
+                try { await llamarFuncion('publicar-banco', { accion: 'activar', id: v.id }); toast('Enviado. GitHub la publicará en unos minutos.'); cargarVersiones(); }
+                catch (err) { toast(err.message, 8000); }
+              },
+            }, 'Volver a esta versión')) : null);
+      }));
+    // Mientras haya una publicación en curso, se comprueba cada 30 s (solo con esta pantalla abierta).
+    if (data.some(v => v.estado === 'publicando') && zonaVersiones.isConnected) {
+      sondeoBanco = setTimeout(() => { if (zonaVersiones.isConnected) cargarVersiones(); }, 30000);
+    }
+  }
+
   const btnAct = h('button', {
     class: 'btn', type: 'button',
     onclick: async () => { botonCargando(btnAct, true, 'Buscando…'); await buscarActualizacion(); botonCargando(btnAct, false); adminBanco(cont); },
-  }, 'Buscar actualización');
-  const porSeccion = Object.entries(banco.secciones).map(([s, nombre]) => {
-    const n = banco.objetivos.filter(o => o.seccion === s).reduce((a, o) => a + o.n, 0);
-    return h('tr', {}, h('td', {}, `Sección ${s}`), h('td', {}, nombre), h('td', { class: 'num' }, n.toLocaleString('es-ES')));
-  });
+  }, 'Actualizar este dispositivo');
+
   cont.replaceChildren(
     h('section', { class: 'card' },
-      h('h2', {}, 'Versión publicada'),
+      h('h2', {}, 'Banco en este dispositivo'),
       h('div', { class: 'stats' },
         h('div', { class: 'stat' }, h('div', { class: 'stat-num' }, banco.total.toLocaleString('es-ES')), h('div', { class: 'stat-label' }, 'Preguntas')),
         h('div', { class: 'stat' }, h('div', { class: 'stat-num sm' }, fechaES(banco.fechaFuente)), h('div', { class: 'stat-label' }, 'Fecha de la fuente')),
         h('div', { class: 'stat' }, h('div', { class: 'stat-num sm mono' }, banco.version), h('div', { class: 'stat-label' }, 'Versión'))),
-      cambio ? h('p', { class: 'muted small' }, `Último cambio en este dispositivo (${cambio.origen}, ${fechaES(cambio.fecha)}): ${resumenCambios(cambio.diff)}.`) : null,
-      h('div', { class: 'table-wrap' }, h('table', { class: 'table' }, h('tbody', {}, porSeccion)))),
+      h('div', { class: 'row' }, btnAct)),
     h('section', { class: 'card' },
-      h('h2', {}, 'Publicar un banco nuevo para todos'),
+      h('h2', {}, 'Publicar un banco nuevo'),
       h('ol', { class: 'steps' },
-        h('li', {}, 'Descarga el ZIP de preguntas (.txt) que publica el Ministerio.'),
-        h('li', {}, 'Compruébalo aquí con "Validar ZIP": la app revisa todas las preguntas antes de publicar.'),
-        h('li', {}, 'Súbelo a la carpeta fuentes del repositorio. El banco se regenera solo y todos los usuarios lo reciben al abrir la app.')),
-      h('div', { class: 'row' },
-        h('button', { class: 'btn', type: 'button', onclick: () => input.click() }, 'Validar ZIP'),
-        h('a', { class: 'btn primary', href: SUBIR_ZIP_URL, target: '_blank', rel: 'noopener' }, 'Subir ZIP al repositorio'),
-        btnAct, input),
-      h('p', { class: 'muted small' }, 'Validar un ZIP lo carga solo en este dispositivo; no cambia el banco de los demás.')));
+        h('li', {}, 'Descarga el ZIP de preguntas en .txt que publica el Ministerio.'),
+        h('li', {}, 'Súbelo aquí: la app comprueba todas las preguntas y te enseña qué cambia.'),
+        h('li', {}, 'Pulsa "Publicar para todos". En unos minutos todos los usuarios lo reciben al abrir la app.')),
+      h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => input.click() }, 'Subir ZIP'), input)),
+    zonaCandidato,
+    h('section', { class: 'card' }, zonaVersiones));
+  cargarVersiones();
 }
 
 /* ---------- arranque ---------- */
@@ -1301,6 +1727,13 @@ function errorFatal(titulo, texto) {
     h('button', { class: 'btn primary', type: 'button', onclick: () => location.reload() }, 'Reintentar'))));
 }
 
+/** Con la verificación activada, cambiar la contraseña exige antes el código. */
+async function irANuevaClave() {
+  const aal = await nivelVerificacion();
+  if (aal.nextLevel === 'aal2' && aal.currentLevel !== 'aal2') pantallaCodigoMfa(pantallaNuevaClave);
+  else pantallaNuevaClave();
+}
+
 async function init() {
   try {
     if (!window.Capacitor && 'serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
@@ -1314,19 +1747,24 @@ async function init() {
   const params = new URLSearchParams(location.hash.slice(1));
   const errorEnlace = params.get('error_description');
   enRecuperacion = params.get('type') === 'recovery';
+  const esInvitacion = params.get('type') === 'invite';
 
   sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storageKey: 'cap-auth' },
   });
   sb.auth.onAuthStateChange((evento, s) => {
-    if (evento === 'PASSWORD_RECOVERY') { enRecuperacion = true; setTimeout(pantallaNuevaClave, 0); }
+    if (evento === 'PASSWORD_RECOVERY') { enRecuperacion = true; setTimeout(irANuevaClave, 0); }
     if (evento === 'SIGNED_OUT' && usuario) { usuario = null; perfil = null; setTimeout(() => pantallaLogin({ info: 'Tu sesión ha terminado.' }), 0); }
     if (evento === 'TOKEN_REFRESHED' && s && usuario) vaciarCola();
   });
 
   const { data } = await sb.auth.getSession();
   if (location.hash && /access_token|error/.test(location.hash)) history.replaceState(null, '', location.pathname + location.search);
-  if (enRecuperacion && data.session) { pantallaNuevaClave(); return; }
+  if (enRecuperacion && data.session) { irANuevaClave(); return; }
+  // El enlace de invitación ya inicia sesión: antes de entrar, el invitado crea su contraseña.
+  // Se recuerda por si cierra la app sin hacerlo.
+  if (esInvitacion && data.session) lsSet('cap.claveInvitacionPendiente', data.session.user.id);
+  if (data.session && lsGet('cap.claveInvitacionPendiente', null) === data.session.user.id) { pantallaNuevaClave(true); return; }
   if (data.session) await entrarConSesion(data.session);
   else pantallaLogin({ error: errorEnlace ? traducirError({ message: errorEnlace }) : null });
   buscarActualizacion({ silencioso: true });

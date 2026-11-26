@@ -1,10 +1,11 @@
 // Service worker: la app funciona sin conexión.
-// - App (HTML/CSS/JS/iconos/librerías): primero caché y se refresca en segundo plano.
+// - App (HTML/CSS/JS): primero red, para que todos vean la versión nueva en cuanto se publica;
+//   sin conexión, la copia guardada. Iconos, librerías y fuentes: primero caché.
 // - Banco (data/*.json): primero red; sin conexión, la copia guardada.
 // - Cuentas (Supabase) y demás servidores: siempre a la red, nunca en caché.
-const CACHE = 'test-cap-v2';
+const CACHE = 'test-cap-v5';
 const APP = [
-  './', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
+  './', 'index.html', 'privacidad.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'vendor/supabase.js', 'vendor/jszip.min.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
   'data/banco-cap.json', 'data/version.json',
@@ -34,6 +35,16 @@ self.addEventListener('fetch', e => {
       if (res.ok) { const copia = res.clone(); caches.open(CACHE).then(c => c.put(clave, copia)); }
       return res;
     }).catch(() => caches.match(clave)));
+    return;
+  }
+
+  const esApp = propio && (req.mode === 'navigate' || /\.(html|js|css|webmanifest)$/.test(url.pathname) || url.pathname.endsWith('/'))
+    && !url.pathname.includes('/vendor/');
+  if (esApp) {
+    e.respondWith(fetch(req, { cache: 'no-cache' }).then(res => {
+      if (res.ok) { const copia = res.clone(); caches.open(CACHE).then(c => c.put(req, copia)); }
+      return res;
+    }).catch(() => caches.match(req).then(r => r || caches.match('index.html'))));
     return;
   }
 

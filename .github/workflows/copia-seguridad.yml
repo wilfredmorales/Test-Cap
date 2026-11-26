@@ -1,0 +1,87 @@
+name: Copia de seguridad
+
+# Copia semanal de la base de datos de Supabase (el plan gratuito no guarda copias restaurables).
+# - Exporta el esquema "public" completo (tablas, funciones, políticas y datos) y los datos de las
+#   cuentas (auth.users, auth.identities, auth.mfa_factors).
+# - La CIFRA con AES-256 antes de guardarla: el repositorio es público y la copia lleva correos
+#   y contraseñas cifradas de los usuarios. Sin la frase de BACKUP_PASSPHRASE no se puede abrir.
+# - Se guarda como artefacto del workflow durante 90 días (el máximo de GitHub).
+# - Si falla (secreto que falta, contraseña cambiada...), GitHub te avisa por correo.
+# Restaurar: docs/copias-seguridad.md
+on:
+  schedule:
+    - cron: "17 3 * * 0" # domingos, 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: copia-seguridad
+  cancel-in-progress: false
+
+jobs:
+  copia:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      FRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+    steps:
+      - name: Comprobar secretos
+        run: |
+          [ -n "$DB_URL" ] || { echo "::error::Falta el secreto SUPABASE_DB_URL"; exit 1; }
+          [ -n "$FRASE" ] || { echo "::error::Falta el secreto BACKUP_PASSPHRASE"; exit 1; }
+          [ "${#FRASE}" -ge 20 ] || { echo "::error::BACKUP_PASSPHRASE debe tener al menos 20 caracteres"; exit 1; }
+          case "$DB_URL" in postgres://*|postgresql://*) ;; *) echo "::error::SUPABASE_DB_URL debe empezar por postgresql://"; exit 1;; esac
+
+      - name: Instalar pg_dump 17 (misma versión que el servidor)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+          /usr/lib/postgresql/17/bin/pg_dump --version
+
+      - name: Exportar
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p copia
+          PGD=/usr/lib/postgresql/17/bin/pg_dump
+          # Estructura (referencia; para restaurar se usan las migraciones de supabase/migrations).
+          $PGD "$DB_URL" --schema-only --schema=public --schema=privado --no-owner --no-privileges -f copia/estructura.sql
+          # Datos: lo que hay que recuperar si se pierde la base.
+          $PGD "$DB_URL" --data-only --no-owner --schema=public -f copia/datos.sql
+          $PGD "$DB_URL" --data-only --no-owner \
+            --table=auth.users --table=auth.identities --table=auth.mfa_factors \
+            -f copia/cuentas.sql
+          {
+            echo "Fecha: $(date -u +%FT%TZ)"
+            echo "Commit: $GITHUB_SHA"
+            for f in estructura datos cuentas; do echo "Lineas $f.sql: $(wc -l < copia/$f.sql)"; done
+          } > copia/LEEME.txt
+          # Una copia vacía o incompleta es un error, no un éxito.
+          grep -q "CREATE TABLE public.perfiles" copia/estructura.sql || { echo "::error::Falta la tabla perfiles en la copia"; exit 1; }
+          grep -q "COPY public.perfiles" copia/datos.sql || { echo "::error::Faltan los datos de perfiles"; exit 1; }
+          grep -q "COPY auth.users" copia/cuentas.sql || { echo "::error::Faltan las cuentas"; exit 1; }
+
+      - name: Cifrar
+        run: |
+          set -euo pipefail
+          umask 077
+          NOMBRE="copia-$(date -u +%Y%m%d-%H%M).tar.gz.gpg"
+          tar -czf - -C copia . | gpg --batch --yes --pinentry-mode loopback --symmetric \
+            --cipher-algo AES256 --passphrase-fd 3 -o "$NOMBRE" 3<<<"$FRASE"
+          shred -u copia/*.sql || rm -f copia/*.sql
+          echo "NOMBRE=$NOMBRE" >> "$GITHUB_ENV"
+          ls -l "$NOMBRE"
+
+      - name: Guardar (90 días)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NOMBRE }}
+          path: ${{ env.NOMBRE }}
+          retention-days: 90
+          if-no-files-found: error
