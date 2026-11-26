@@ -40,11 +40,11 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
       - name: Comprobar que este paso no puede escribir en el repositorio
         run: |
           if git config --get-regexp 'http\..*\.extraheader' >/dev/null; then
@@ -56,6 +56,12 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           npm run www
           npx cap add android
+          # Versión para Play Store: versionCode debe crecer en cada subida (número de ejecución + 100,
+          # por encima de cualquier APK anterior) y versionName sale de package.json.
+          VERSION=$(node -p "require('./package.json').version")
+          CODIGO=$((GITHUB_RUN_NUMBER + 100))
+          sed -i -E "s/versionCode [0-9]+/versionCode $CODIGO/; s/versionName \"[^\"]*\"/versionName \"$VERSION\"/" android/app/build.gradle
+          grep -E "versionCode|versionName" android/app/build.gradle
           cp -r android-recursos/res/. android/app/src/main/res/
           rm -f android/app/src/main/res/mipmap-anydpi-v26/*.xml
           npx cap sync android
@@ -86,13 +92,15 @@ jobs:
               echo "::error::La clave se leyó, pero la contraseña (ANDROID_KEYSTORE_PASS) o el alias (ANDROID_KEY_ALIAS) no coinciden."; rm -f "$RUNNER_TEMP/release.jks"; exit 1
             fi
             echo "  la contraseña y el alias abren la clave: correcto"
-            ./gradlew assembleRelease --no-daemon \
+            # APK para instalar a mano y AAB (formato que exige Play Store), firmados con la misma clave.
+            ./gradlew assembleRelease bundleRelease --no-daemon \
               -Pandroid.injected.signing.store.file="$RUNNER_TEMP/release.jks" \
               -Pandroid.injected.signing.store.password="$KS_PASS" \
               -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
               -Pandroid.injected.signing.key.password="$KEY_PASS"
             rm -f "$RUNNER_TEMP/release.jks"
             cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/salida/test-cap.apk"
+            cp app/build/outputs/bundle/release/app-release.aab "$RUNNER_TEMP/salida/test-cap.aab"
             echo "publicacion" > "$RUNNER_TEMP/salida/tipo.txt"
           else
             echo "::warning::Sin clave de firma (secretos ANDROID_*): se compila la versión de prueba"
@@ -104,7 +112,9 @@ jobs:
           {
             echo "Test CAP · APK $(cat "$RUNNER_TEMP/salida/tipo.txt")"
             echo "Compilado: $(date -u +%Y-%m-%dT%H:%M:%SZ) · commit ${GITHUB_SHA::7}"
+            echo "Versión: $(grep -oE 'versionName "[^"]*"' app/build.gradle) · $(grep -oE 'versionCode [0-9]+' app/build.gradle)"
             echo "SHA-256 del APK: $(sha256sum "$RUNNER_TEMP/salida/test-cap.apk" | cut -d' ' -f1)"
+            [ -f "$RUNNER_TEMP/salida/test-cap.aab" ] && echo "SHA-256 del AAB: $(sha256sum "$RUNNER_TEMP/salida/test-cap.aab" | cut -d' ' -f1)"
             echo "Certificado de firma:"
             "$APKSIGNER" verify --print-certs "$RUNNER_TEMP/salida/test-cap.apk" | grep -E "SHA-256|DN:"
           } > "$RUNNER_TEMP/salida/APK-VERIFICACION.txt"
@@ -134,8 +144,10 @@ jobs:
           mkdir -p dist
           cp apk-nuevo/test-cap.apk dist/test-cap.apk
           cp apk-nuevo/APK-VERIFICACION.txt dist/APK-VERIFICACION.txt
+          # AAB para Play Store (solo en la versión de publicación firmada).
+          if [ -f apk-nuevo/test-cap.aab ]; then cp apk-nuevo/test-cap.aab dist/test-cap.aab; git add dist/test-cap.aab; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898+github-actions[bot]@users.noreply.github.com"
           git add dist/test-cap.apk dist/APK-VERIFICACION.txt
-          git commit -m "APK compilado ($(head -1 apk-nuevo/tipo.txt))" || exit 0
+          git commit -m "APK y AAB compilados ($(head -1 apk-nuevo/tipo.txt))" || exit 0
           for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done
