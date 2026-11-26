@@ -5,7 +5,7 @@ import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 
 const OWNER = "wilfredmorales";
 const REPO = "Test-Cap";
-const BRANCH = "claude/testcat-repo-review-540xv2";
+const BRANCH = "main";
 const VERSION_PUBLICADA = "https://wilfredmorales.github.io/Test-Cap/data/version.json";
 const MAX_ZIP_BASE64 = 7_000_000; // ~5 MB de ZIP
 const MINUTOS_LIMITE = 15;

@@ -14,8 +14,9 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 // Dirección pública de la app (los enlaces de los correos vuelven aquí).
 const URL_APP = 'https://wilfredmorales.github.io/Test-Cap/';
 // En la app instalada (APK) las actualizaciones del banco se buscan en GitHub.
-const DATOS_REMOTOS = 'https://raw.githubusercontent.com/wilfredmorales/Test-Cap/claude/testcat-repo-review-540xv2/data/';
-const SUBIR_ZIP_URL = 'https://github.com/wilfredmorales/Test-Cap/upload/claude/testcat-repo-review-540xv2/fuentes';
+// El APK lee el banco de la propia web (GitHub Pages): sigue a la rama que publique Pages, sin nombres de rama aquí.
+const DATOS_REMOTOS = URL_APP + 'data/';
+const SUBIR_ZIP_URL = 'https://github.com/wilfredmorales/Test-Cap/upload/main/fuentes';
 
 const TIPOS = {
   mercancias: { nombre: 'Mercancías', icono: 'camion', obligatorias: ['1', '2'], especifica: '2', complementarias: ['4', '4-5'] },
@@ -226,7 +227,7 @@ async function aplicarBanco(nuevo, origen) {
 async function buscarActualizacion({ silencioso = false } = {}) {
   if (!navigator.onLine) { if (!silencioso) toast('Sin conexión. Inténtalo cuando tengas internet.'); return; }
   try {
-    const v = await (await fetch(urlDatos('version.json'), { cache: 'no-store' })).json();
+    const v = await (await fetch(urlDatos('version.json') + '?t=' + Date.now(), { cache: 'no-store' })).json();
     if (v.version === banco.version) { if (!silencioso) toast('Ya tienes la última versión del banco.'); return; }
     if (silencioso && banco.fechaFuente && v.fechaFuente && v.fechaFuente < banco.fechaFuente) return;
     const res = await fetch(urlDatos('banco-cap.json') + '?v=' + encodeURIComponent(v.version), { cache: 'no-store' });

@@ -3,7 +3,7 @@
 //   sin conexión, la copia guardada. Iconos, librerías y fuentes: primero caché.
 // - Banco (data/*.json): primero red; sin conexión, la copia guardada.
 // - Cuentas (Supabase) y demás servidores: siempre a la red, nunca en caché.
-const CACHE = 'test-cap-v4';
+const CACHE = 'test-cap-v5';
 const APP = [
   './', 'index.html', 'privacidad.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'vendor/supabase.js', 'vendor/jszip.min.js',
