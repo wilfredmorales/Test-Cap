@@ -28,9 +28,9 @@ const PUNTUACION_DEFECTO = { correcta: 1, incorrecta: -0.5, blanco: 0, aprobado:
 // Fase B de la verificación en dos pasos (spec 003): el panel exige una sesión verificada (aal2).
 const MFA_OBLIGATORIA_ADMIN = true;
 
-// Captcha anti-bots (hCaptcha) en registro, acceso, recuperación y baja. La Site Key es pública.
+// Captcha anti-bots (Cloudflare Turnstile) en registro, acceso, recuperación y baja. La Site Key es pública.
 // Supabase lo exige solo cuando se activa en Authentication → Attack Protection (con la Secret Key).
-const HCAPTCHA_SITEKEY = '87346d9a-1478-422a-b824-3ad210d67d02';
+const TURNSTILE_SITEKEY = 'PENDIENTE';
 
 const urlDatos = archivo => (window.Capacitor ? DATOS_REMOTOS : 'data/') + archivo;
 const redirectApp = () =>
@@ -122,48 +122,49 @@ function confirmar(mensaje, aceptar = 'Sí', cancelar = 'Cancelar', peligro = fa
 
 /* ---------- captcha ---------- */
 
-let cargaHcaptcha = null;
-/** Carga el script de hCaptcha solo cuando hace falta (pantallas de acceso y baja). */
-function cargarHcaptcha() {
-  if (window.hcaptcha) return Promise.resolve(window.hcaptcha);
-  if (cargaHcaptcha) return cargaHcaptcha;
-  cargaHcaptcha = new Promise((resolve, reject) => {
-    const fallo = () => { cargaHcaptcha = null; reject(new Error('captcha-carga')); };
+let cargaTurnstile = null;
+/** Carga el script de Turnstile solo cuando hace falta (pantallas de acceso y baja). */
+function cargarTurnstile() {
+  if (window.turnstile) return Promise.resolve(window.turnstile);
+  if (cargaTurnstile) return cargaTurnstile;
+  cargaTurnstile = new Promise((resolve, reject) => {
+    const fallo = () => { cargaTurnstile = null; reject(new Error('captcha-carga')); };
     const espera = setTimeout(fallo, 15000);
-    window.alCargarHcaptcha = () => { clearTimeout(espera); resolve(window.hcaptcha); };
+    window.alCargarTurnstile = () => { clearTimeout(espera); resolve(window.turnstile); };
     const s = document.createElement('script');
-    s.src = 'https://js.hcaptcha.com/1/api.js?render=explicit&recaptchacompat=off&hl=es&onload=alCargarHcaptcha';
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=alCargarTurnstile';
     s.async = true;
     s.onerror = () => { clearTimeout(espera); s.remove(); fallo(); };
     document.head.append(s);
   });
-  return cargaHcaptcha;
+  return cargaTurnstile;
 }
 
 /** Pide el captcha en una ventana y devuelve el token (de un solo uso), o null si se cancela. */
 async function pedirCaptcha() {
-  let hc;
-  try { hc = await cargarHcaptcha(); } catch {
+  let ts;
+  try { ts = await cargarTurnstile(); } catch {
     toast('No se pudo cargar la comprobación anti-robots. Revisa tu conexión e inténtalo de nuevo.', 6000);
     return null;
   }
   return new Promise(resolve => {
     let id = null;
-    const cerrar = v => { try { if (id !== null) hc.remove(id); } catch { /* ya quitado */ } capa.remove(); resolve(v); };
+    const cerrar = v => { try { if (id !== null) ts.remove(id); } catch { /* ya quitado */ } capa.remove(); resolve(v); };
     const caja = h('div', { class: 'captcha-caja' });
     const capa = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' },
       h('div', { class: 'card modal-card' },
-        h('p', {}, 'Comprueba que no eres un robot:'),
+        h('p', {}, 'Comprobando que no eres un robot…'),
         caja,
         h('div', { class: 'row end' }, h('button', { class: 'btn', type: 'button', onclick: () => cerrar(null) }, 'Cancelar'))));
     document.body.append(capa);
     const oscuro = document.documentElement.dataset.theme === 'dark'
       || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
     try {
-      id = hc.render(caja, {
-        sitekey: HCAPTCHA_SITEKEY, hl: 'es', theme: oscuro ? 'dark' : 'light',
+      id = ts.render(caja, {
+        sitekey: TURNSTILE_SITEKEY, language: 'es', theme: oscuro ? 'dark' : 'light',
         callback: token => cerrar(token),
-        'error-callback': () => toast('La comprobación anti-robots ha fallado. Inténtalo de nuevo.'),
+        'error-callback': () => { toast('La comprobación anti-robots ha fallado. Inténtalo de nuevo.'); },
+        'expired-callback': () => { try { ts.reset(id); } catch { /* nada */ } },
       });
     } catch {
       toast('No se pudo mostrar la comprobación anti-robots.');
