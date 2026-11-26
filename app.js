@@ -30,7 +30,7 @@ const MFA_OBLIGATORIA_ADMIN = true;
 
 // Captcha anti-bots (Cloudflare Turnstile) en registro, acceso, recuperación y baja. La Site Key es pública.
 // Supabase lo exige solo cuando se activa en Authentication → Attack Protection (con la Secret Key).
-const TURNSTILE_SITEKEY = 'PENDIENTE';
+const TURNSTILE_SITEKEY = '0x4AAAAAAGUf7tAYLDHNa4Ul';
 
 const urlDatos = archivo => (window.Capacitor ? DATOS_REMOTOS : 'data/') + archivo;
 const redirectApp = () =>
