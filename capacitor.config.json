@@ -8,5 +8,11 @@
   "server": {
     "hostname": "apk.wilfredmorales.github.io",
     "androidScheme": "https"
+  },
+  "plugins": {
+    "SystemBars": {
+      "style": "DARK",
+      "initialViewportFitValueHint": "cover"
+    }
   }
 }

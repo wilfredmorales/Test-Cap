@@ -164,9 +164,10 @@ activa (registros del 24-11: `email_not_confirmed`) y el redirect usado fue el d
 - [x] Capacitor 6.1.2 → **6.2.4** (26-11): corrige GHSA-rvm3-566m-v7fv (crítica, dentro del APK: un enlace
   a `/_capacitor_http_interceptor_` cargaba contenido remoto con el origen de la app). En Test CAP no hay
   enlaces que escriban los usuarios, así que el riesgo real era bajo, pero el arreglo es directo.
-- [ ] `tar`, `glob`, `minimatch`, `rimraf` (vulnerables) siguen dentro de la **CLI** de Capacitor 6: solo se usan
-  al compilar, no van en el APK, y `tar` solo descomprime la plantilla que trae la propia CLI. Se quitan
-  pasando a Capacitor 8 (cambio grande: Gradle, Java y Android SDK nuevos); planificarlo antes de Play Store.
+- [x] Capacitor 6.2.4 → **8.6.3** (26-11): `npm audit` sin vulnerabilidades. Node 22 y Java 21 en el workflow.
+  Android 15+ dibuja la app bajo las barras del sistema: el CSS ya usaba `env(safe-area-inset-*)` y
+  `SystemBars.style = DARK` deja los iconos claros sobre la cabecera azul. El workflow genera también el
+  **AAB** para Play Store y numera `versionCode` (ejecución + 100).
 - [ ] CAPTCHA (Turnstile) en registro, inicio de sesión y recuperación.
 - [ ] SMTP propio con dominio verificado (SPF, DKIM, DMARC).
 - [ ] Auth: contraseña mínima 8, contraseñas filtradas bloqueadas, Secure email/password change activos.
