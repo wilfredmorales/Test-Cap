@@ -2,5 +2,11 @@
   "appId": "app.testcap.cap",
   "appName": "Test CAP",
   "webDir": "www",
-  "android": { "backgroundColor": "#0f2347" }
+  "android": {
+    "backgroundColor": "#0f2347"
+  },
+  "server": {
+    "hostname": "apk.wilfredmorales.github.io",
+    "androidScheme": "https"
+  }
 }
