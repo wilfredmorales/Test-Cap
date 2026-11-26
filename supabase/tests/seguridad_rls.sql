@@ -107,6 +107,16 @@ begin
   exception when others then ko := ko + 1; det := det || ' [FALLA S33 la función no puede desactivar: ' || sqlerrm || ']'; end;
   reset role;
 
+  -- ===== S34-S35: nunca quedan cero administradores activos, tampoco desde las Edge Functions =====
+  set local role service_role;
+  update public.perfiles set rol = 'usuario' where id = a; -- S29 lo hizo admin: "adm" vuelve a ser el único
+  begin update public.perfiles set rol = 'usuario' where id = adm; ko := ko + 1; det := det || ' [FALLA S34 service_role quita el rol al último admin]';
+  exception when others then ok := ok + 1; end;
+  reset role;
+  -- S35 (migración 008): como sistema (así borra Supabase Auth), borrar la cuenta del último admin falla
+  begin delete from auth.users where id = adm; ko := ko + 1; det := det || ' [FALLA S35 se borró la cuenta del último admin (008)]';
+  exception when check_violation then ok := ok + 1; end;
+
   -- ===== Permisos por defecto (parche H5): una tabla nueva no debe quedar abierta =====
   create table public._prueba_permisos_por_defecto (x int);
   if has_table_privilege('anon', 'public._prueba_permisos_por_defecto', 'select') then
