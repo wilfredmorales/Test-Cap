@@ -356,3 +356,8 @@ a.brand { text-decoration: none; }
   .result { flex-direction: column; align-items: flex-start; gap: 8px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+.legal ol { padding-left: 1.2em; }
+.legal ol li { margin: 6px 0; }
+.aviso-legal { margin-top: 20px; line-height: 1.45; }
+.legal [id] { scroll-margin-top: 90px; }
