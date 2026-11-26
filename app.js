@@ -13,6 +13,8 @@ const SUPABASE_URL = 'https://bzalfptgfqsoalqgsklr.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ6YWxmcHRnZnFzb2FscWdza2xyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU1Mzg4OTQsImV4cCI6MjExMTExNDg5NH0.DAsi5OEkCV8TnfHE8nAJSlxHgkhQjCJUAOqJPKHWMWo';
 // Dirección pública de la app (los enlaces de los correos vuelven aquí).
 const URL_APP = 'https://wilfredmorales.github.io/Test-Cap/';
+// Fuente pública de las preguntas (se enlaza en el aviso de app no oficial).
+const URL_FUENTE_PREGUNTAS = 'https://www.transportes.gob.es/transporte-terrestre/examenes-y-formacion/examenes-de-formacion-de-conductores-profesionales-cap';
 // En la app instalada (APK) las actualizaciones del banco se buscan en GitHub.
 // El APK lee el banco de la propia web (GitHub Pages): sigue a la rama que publique Pages, sin nombres de rama aquí.
 const DATOS_REMOTOS = URL_APP + 'data/';
@@ -636,7 +638,11 @@ function marcoAcceso(titulo, subtitulo, ...contenido) {
       h('div', { class: 'auth-card' },
         h('h2', { class: 'auth-title' }, titulo),
         subtitulo ? h('p', { class: 'muted' }, subtitulo) : null,
-        ...contenido)));
+        ...contenido,
+        // Play Store (política de información gubernamental): dejar claro que no es una app oficial.
+        h('p', { class: 'aviso-legal small muted' },
+          'App independiente, sin relación con el Ministerio de Transportes ni con la DGT. Las preguntas proceden del ',
+          h('a', { href: URL_FUENTE_PREGUNTAS, target: '_blank', rel: 'noopener' }, 'banco público del Ministerio'), '.'))));
 }
 
 function aviso(tipo, texto) { return texto ? h('div', { class: `alert ${tipo}`, role: tipo === 'error' ? 'alert' : 'status' }, texto) : null; }
