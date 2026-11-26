@@ -117,6 +117,9 @@ jobs:
 
   guardar:
     needs: compilar
+    # Solo main guarda el APK: si otras ramas también lo guardaran, el archivo binario chocaría
+    # en cada PR (conflicto sin solución desde la web). En las demás ramas basta con que compile.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write

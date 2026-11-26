@@ -1,0 +1,38 @@
+name: Mantener Supabase activo
+
+# El plan gratuito de Supabase pausa el proyecto tras 7 días sin actividad (la app deja de
+# funcionar hasta reactivarlo a mano). Esta tarea hace una consulta real a la base de datos y
+# una petición a la API cada día, para que nunca pase una semana sin actividad.
+# Usa el mismo secreto que la copia de seguridad (SUPABASE_DB_URL). Si falla, GitHub avisa por correo.
+# Ojo: GitHub desactiva las tareas programadas de un repositorio público tras 60 días sin commits;
+# si eso pasa, te avisa por correo y basta con pulsar "Enable workflow" en Actions.
+on:
+  schedule:
+    - cron: "23 6 * * *" # todos los días, 06:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  latido:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+    steps:
+      - name: Comprobar secreto
+        run: '[ -n "$DB_URL" ] || { echo "::error::Falta el secreto SUPABASE_DB_URL"; exit 1; }'
+
+      - name: Consulta a la base de datos
+        run: |
+          set -euo pipefail
+          n=$(psql "$DB_URL" -tAc "select count(*) from public.perfiles")
+          echo "Base de datos activa. Cuentas: $n"
+
+      - name: Petición a la API
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' https://bzalfptgfqsoalqgsklr.supabase.co/auth/v1/health)
+          echo "API de autenticación: HTTP $code"
+          # 401 también vale: la API responde (no está pausada). 540 o 5xx significa pausada o caída.
+          case "$code" in 2*|401) ;; *) echo "::error::La API de Supabase no responde bien (HTTP $code). ¿Proyecto pausado?"; exit 1;; esac
