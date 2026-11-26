@@ -65,6 +65,13 @@ Deno.serve(async (req) => {
       case "rol": {
         if (!UUID.test(id)) return respuesta(400, { error: "Usuario no válido" });
         const rol = body.rol === "admin" ? "admin" : "usuario";
+        if (rol === "usuario") {
+          // Nadie se quita su propio rol (evita quedarse fuera por error) y nunca quedan cero administradores.
+          if (id === yo) return respuesta(400, { error: "No puedes quitarte tu propio rol de administrador. Pídeselo a otro administrador." });
+          const { count } = await servicio.from("perfiles").select("id", { count: "exact", head: true })
+            .eq("rol", "admin").eq("activo", true).neq("id", id);
+          if (!count) return respuesta(400, { error: "Debe quedar al menos un administrador activo." });
+        }
         const { error } = await servicio.from("perfiles").update({ rol }).eq("id", id);
         if (error) return respuesta(400, { error: error.message });
         return respuesta(200, { ok: true });

@@ -476,6 +476,7 @@ function pantallaCodigoMfa(continuar) {
     class: 'form', novalidate: true,
     onsubmit: async e => {
       e.preventDefault();
+      if (btn.disabled) return; // ya hay una comprobación en marcha
       const codigo = form.codigo.value.replace(/\s/g, '');
       if (!/^\d{6}$/.test(codigo)) { zonaAviso.replaceChildren(aviso('error', 'El código tiene 6 números.')); return; }
       botonCargando(btn, true, 'Verificando…');
@@ -487,6 +488,7 @@ function pantallaCodigoMfa(continuar) {
         await continuar();
       } catch (err) {
         botonCargando(btn, false);
+        pausaTrasError(btn);
         form.codigo.value = '';
         zonaAviso.replaceChildren(aviso('error', traducirError(err)));
       }
@@ -564,11 +566,18 @@ async function activarMfa(zona, todos) {
     class: 'form', novalidate: true,
     onsubmit: async e => {
       e.preventDefault();
+      if (btnVerif.disabled) return; // ya hay una comprobación en marcha
       const codigo = form.codigo.value.replace(/\s/g, '');
       if (!/^\d{6}$/.test(codigo)) { zonaAviso.replaceChildren(aviso('error', 'El código tiene 6 números.')); return; }
       botonCargando(btnVerif, true, 'Comprobando…');
       const { error: err } = await sb.auth.mfa.challengeAndVerify({ factorId: id, code: codigo });
-      if (err) { botonCargando(btnVerif, false); zonaAviso.replaceChildren(aviso('error', traducirError(err))); return; }
+      if (err) {
+        botonCargando(btnVerif, false);
+        pausaTrasError(btnVerif);
+        form.codigo.value = '';
+        zonaAviso.replaceChildren(aviso('error', traducirError(err)));
+        return;
+      }
       toast('Verificación en dos pasos activada.', 5000);
       seccionMfa(zona);
     },
@@ -636,6 +645,13 @@ function botonCargando(btn, cargando, texto) {
   btn.disabled = cargando;
   if (cargando) { btn.dataset.txt = btn.textContent; btn.textContent = texto || 'Un momento…'; }
   else if (btn.dataset.txt) btn.textContent = btn.dataset.txt;
+}
+
+/** Tras un código incorrecto: deja el botón bloqueado unos segundos para que no se reenvíe
+ *  el mismo código pulsando varias veces seguidas. */
+function pausaTrasError(btn, segundos = 3) {
+  btn.disabled = true;
+  setTimeout(() => { btn.disabled = false; }, segundos * 1000);
 }
 
 function pantallaLogin({ error, info, email = '' } = {}) {
