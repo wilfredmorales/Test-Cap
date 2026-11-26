@@ -42,8 +42,13 @@ Deno.serve(async (req) => {
     const publico = createClient(url, Deno.env.get("SUPABASE_ANON_KEY")!, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
-    const { error: errPass } = await publico.auth.signInWithPassword({ email: yo.email!, password });
-    if (errPass) return respuesta(400, { error: "La contraseña no es correcta" });
+    // Con el captcha activado en Supabase, este inicio de sesión también lo exige: se reenvía el token del usuario.
+    const captchaToken = typeof body.captchaToken === "string" ? body.captchaToken.slice(0, 4096) : undefined;
+    const { error: errPass } = await publico.auth.signInWithPassword({ email: yo.email!, password, options: { captchaToken } });
+    if (errPass) {
+      if (/captcha/i.test(errPass.message)) return respuesta(400, { error: "La comprobación anti-robots ha caducado. Inténtalo de nuevo." });
+      return respuesta(400, { error: "La contraseña no es correcta" });
+    }
 
     // No dejar el sistema sin administrador.
     const { data: perfil } = await servicio.from("perfiles").select("rol, activo").eq("id", yo.id).single();

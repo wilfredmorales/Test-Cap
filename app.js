@@ -28,6 +28,10 @@ const PUNTUACION_DEFECTO = { correcta: 1, incorrecta: -0.5, blanco: 0, aprobado:
 // Fase B de la verificación en dos pasos (spec 003): el panel exige una sesión verificada (aal2).
 const MFA_OBLIGATORIA_ADMIN = true;
 
+// Captcha anti-bots (hCaptcha) en registro, acceso, recuperación y baja. La Site Key es pública.
+// Supabase lo exige solo cuando se activa en Authentication → Attack Protection (con la Secret Key).
+const HCAPTCHA_SITEKEY = '87346d9a-1478-422a-b824-3ad210d67d02';
+
 const urlDatos = archivo => (window.Capacitor ? DATOS_REMOTOS : 'data/') + archivo;
 const redirectApp = () =>
   (!window.Capacitor && /^https?:$/.test(location.protocol) && !/^(localhost|127\.)/.test(location.hostname))
@@ -113,6 +117,58 @@ function confirmar(mensaje, aceptar = 'Sí', cancelar = 'Cancelar', peligro = fa
           h('button', { class: 'btn', type: 'button', onclick: () => cerrar(false) }, cancelar), btnOk)));
     document.body.append(capa);
     btnOk.focus();
+  });
+}
+
+/* ---------- captcha ---------- */
+
+let cargaHcaptcha = null;
+/** Carga el script de hCaptcha solo cuando hace falta (pantallas de acceso y baja). */
+function cargarHcaptcha() {
+  if (window.hcaptcha) return Promise.resolve(window.hcaptcha);
+  if (cargaHcaptcha) return cargaHcaptcha;
+  cargaHcaptcha = new Promise((resolve, reject) => {
+    const fallo = () => { cargaHcaptcha = null; reject(new Error('captcha-carga')); };
+    const espera = setTimeout(fallo, 15000);
+    window.alCargarHcaptcha = () => { clearTimeout(espera); resolve(window.hcaptcha); };
+    const s = document.createElement('script');
+    s.src = 'https://js.hcaptcha.com/1/api.js?render=explicit&recaptchacompat=off&hl=es&onload=alCargarHcaptcha';
+    s.async = true;
+    s.onerror = () => { clearTimeout(espera); s.remove(); fallo(); };
+    document.head.append(s);
+  });
+  return cargaHcaptcha;
+}
+
+/** Pide el captcha en una ventana y devuelve el token (de un solo uso), o null si se cancela. */
+async function pedirCaptcha() {
+  let hc;
+  try { hc = await cargarHcaptcha(); } catch {
+    toast('No se pudo cargar la comprobación anti-robots. Revisa tu conexión e inténtalo de nuevo.', 6000);
+    return null;
+  }
+  return new Promise(resolve => {
+    let id = null;
+    const cerrar = v => { try { if (id !== null) hc.remove(id); } catch { /* ya quitado */ } capa.remove(); resolve(v); };
+    const caja = h('div', { class: 'captcha-caja' });
+    const capa = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' },
+      h('div', { class: 'card modal-card' },
+        h('p', {}, 'Comprueba que no eres un robot:'),
+        caja,
+        h('div', { class: 'row end' }, h('button', { class: 'btn', type: 'button', onclick: () => cerrar(null) }, 'Cancelar'))));
+    document.body.append(capa);
+    const oscuro = document.documentElement.dataset.theme === 'dark'
+      || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
+    try {
+      id = hc.render(caja, {
+        sitekey: HCAPTCHA_SITEKEY, hl: 'es', theme: oscuro ? 'dark' : 'light',
+        callback: token => cerrar(token),
+        'error-callback': () => toast('La comprobación anti-robots ha fallado. Inténtalo de nuevo.'),
+      });
+    } catch {
+      toast('No se pudo mostrar la comprobación anti-robots.');
+      cerrar(null);
+    }
   });
 }
 
@@ -323,6 +379,7 @@ async function leerZip(file) {
 function traducirError(e) {
   const m = (e && (e.message || e.error_description || e.error)) || String(e);
   const tabla = [
+    [/captcha/i, 'La comprobación anti-robots no es válida o ha caducado. Inténtalo de nuevo.'],
     [/invalid login credentials/i, 'Correo o contraseña incorrectos.'],
     [/invalid totp|totp code|mfa_verification|code.*(invalid|expired)/i, 'Código incorrecto o caducado. Escribe el código que muestra ahora tu app de autenticación.'],
     [/aal2|assurance level/i, 'Esta acción necesita la verificación en dos pasos. Vuelve a iniciar sesión.'],
@@ -335,7 +392,6 @@ function traducirError(e) {
     [/same.*password|different from the old/i, 'La nueva contraseña debe ser distinta de la anterior.'],
     [/failed to fetch|network|load failed/i, 'Sin conexión con el servidor. Comprueba tu internet.'],
     [/expired|invalid.*(token|link)|otp/i, 'El enlace ha caducado o ya se usó. Pide uno nuevo.'],
-    [/captcha/i, 'Completa la verificación de seguridad.'],
   ];
   for (const [re, txt] of tabla) if (re.test(m)) return txt;
   return m;
@@ -592,8 +648,10 @@ function pantallaLogin({ error, info, email = '' } = {}) {
       const correo = form.email.value.trim().toLowerCase();
       const pass = form.password.value;
       if (!correoValido(correo) || !pass) { zonaAviso.replaceChildren(aviso('error', 'Escribe tu correo y tu contraseña.')); return; }
+      const captchaToken = await pedirCaptcha();
+      if (!captchaToken) return;
       botonCargando(btn, true, 'Entrando…');
-      const { data, error: err } = await sb.auth.signInWithPassword({ email: correo, password: pass });
+      const { data, error: err } = await sb.auth.signInWithPassword({ email: correo, password: pass, options: { captchaToken } });
       botonCargando(btn, false);
       if (err) {
         const txt = traducirError(err);
@@ -602,7 +660,9 @@ function pantallaLogin({ error, info, email = '' } = {}) {
           zonaAviso.append(h('button', {
             class: 'btn link', type: 'button',
             onclick: async () => {
-              const { error: e2 } = await sb.auth.resend({ type: 'signup', email: correo, options: { emailRedirectTo: redirectApp() } });
+              const tk = await pedirCaptcha();
+              if (!tk) return;
+              const { error: e2 } = await sb.auth.resend({ type: 'signup', email: correo, options: { emailRedirectTo: redirectApp(), captchaToken: tk } });
               toast(e2 ? traducirError(e2) : 'Te hemos reenviado el correo de confirmación.');
             },
           }, 'Reenviar correo de confirmación'));
@@ -643,9 +703,11 @@ function pantallaRegistro(email = '') {
           : claveSegura(pass) || (pass !== form.password2.value ? 'Las contraseñas no coinciden.' : null)
             || (!acepto.checked ? 'Acepta las condiciones para continuar.' : null);
       if (err) { zonaAviso.replaceChildren(aviso('error', err)); return; }
+      const captchaToken = await pedirCaptcha();
+      if (!captchaToken) return;
       botonCargando(btn, true, 'Creando cuenta…');
       const { data, error } = await sb.auth.signUp({
-        email: correo, password: pass, options: { data: { nombre }, emailRedirectTo: redirectApp() },
+        email: correo, password: pass, options: { data: { nombre }, emailRedirectTo: redirectApp(), captchaToken },
       });
       botonCargando(btn, false);
       if (error) { zonaAviso.replaceChildren(aviso('error', traducirError(error))); return; }
@@ -683,8 +745,10 @@ function pantallaRecuperar(email = '') {
       e.preventDefault();
       const correo = form.email.value.trim().toLowerCase();
       if (!correoValido(correo)) { zonaAviso.replaceChildren(aviso('error', 'Escribe un correo válido.')); return; }
+      const captchaToken = await pedirCaptcha();
+      if (!captchaToken) return;
       botonCargando(btn, true, 'Enviando…');
-      const { error } = await sb.auth.resetPasswordForEmail(correo, { redirectTo: redirectApp() });
+      const { error } = await sb.auth.resetPasswordForEmail(correo, { redirectTo: redirectApp(), captchaToken });
       botonCargando(btn, false);
       if (error && /rate|conexión|fetch/i.test(traducirError(error) + error.message)) {
         zonaAviso.replaceChildren(aviso('error', traducirError(error))); return;
@@ -1331,9 +1395,11 @@ function eliminarMiCuenta() {
       e.preventDefault();
       if (texto.value.trim().toUpperCase() !== 'ELIMINAR') { zonaAviso.replaceChildren(aviso('error', 'Escribe ELIMINAR para confirmar.')); return; }
       if (!pass.value) { zonaAviso.replaceChildren(aviso('error', 'Escribe tu contraseña.')); return; }
+      const captchaToken = await pedirCaptcha();
+      if (!captchaToken) return;
       botonCargando(btnOk, true, 'Eliminando…');
       try {
-        await llamarFuncion('mi-cuenta', { accion: 'eliminar', password: pass.value, confirmacion: 'ELIMINAR' });
+        await llamarFuncion('mi-cuenta', { accion: 'eliminar', password: pass.value, confirmacion: 'ELIMINAR', captchaToken });
       } catch (err) {
         botonCargando(btnOk, false);
         zonaAviso.replaceChildren(aviso('error', traducirError(err)));
@@ -1511,7 +1577,9 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
           class: 'btn sm', type: 'button',
           onclick: async () => {
             if (!(await confirmar(`¿Enviar a ${u.email} un enlace para cambiar la contraseña?`, 'Enviar'))) return;
-            const { error: e2 } = await sb.auth.resetPasswordForEmail(u.email, { redirectTo: redirectApp() });
+            const captchaToken = await pedirCaptcha();
+            if (!captchaToken) return;
+            const { error: e2 } = await sb.auth.resetPasswordForEmail(u.email, { redirectTo: redirectApp(), captchaToken });
             toast(e2 ? traducirError(e2) : 'Enlace enviado.');
           },
         }, 'Enviar recuperación'),
