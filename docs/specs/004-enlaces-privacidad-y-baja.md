@@ -1,6 +1,6 @@
 # Spec 004 · Enlaces sin correo, política de privacidad y baja de la cuenta
 
-Estado: **implementada (26-11-2026)** · faltan el nombre del responsable y el correo de contacto en privacidad.html
+Estado: **implementada (26-11-2026)**
 
 ## Objetivo
 
