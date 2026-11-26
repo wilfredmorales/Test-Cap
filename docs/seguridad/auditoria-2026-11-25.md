@@ -161,7 +161,12 @@ activa (registros del 24-11: `email_not_confirmed`) y el redirect usado fue el d
 - [x] MFA activado por el admin y fase B aplicada (25-11-2026): `es_admin()` y las dos funciones exigen `aal2`; batería 33 PASA, 0 FALLA.
 - [x] Workflow del APK sustituido (25-11-2026): compilación sin escritura, `npm ci --ignore-scripts` con lockfile.
 - [x] Clave de firma de publicación en los secretos ANDROID_* (H4): APK 1.1.0 firmado el 25-11-2026.
-- [ ] Actualizar Capacitor (la CLI 6.1.2 arrastra `tar` 6 y `glob` 9 marcados como obsoletos; solo en compilación, no van dentro del APK).
+- [x] Capacitor 6.1.2 → **6.2.4** (26-11): corrige GHSA-rvm3-566m-v7fv (crítica, dentro del APK: un enlace
+  a `/_capacitor_http_interceptor_` cargaba contenido remoto con el origen de la app). En Test CAP no hay
+  enlaces que escriban los usuarios, así que el riesgo real era bajo, pero el arreglo es directo.
+- [ ] `tar`, `glob`, `minimatch`, `rimraf` (vulnerables) siguen dentro de la **CLI** de Capacitor 6: solo se usan
+  al compilar, no van en el APK, y `tar` solo descomprime la plantilla que trae la propia CLI. Se quitan
+  pasando a Capacitor 8 (cambio grande: Gradle, Java y Android SDK nuevos); planificarlo antes de Play Store.
 - [ ] CAPTCHA (Turnstile) en registro, inicio de sesión y recuperación.
 - [ ] SMTP propio con dominio verificado (SPF, DKIM, DMARC).
 - [ ] Auth: contraseña mínima 8, contraseñas filtradas bloqueadas, Secure email/password change activos.
