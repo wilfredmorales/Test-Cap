@@ -22,7 +22,7 @@ const PAGOS_ACTIVOS = false;
 const CONTACTO = 'testcap.app.sup@gmail.com';
 const PRECIO_TEXTO = '12 €';
 const MESES_ACCESO = 6;
-const CHECKOUT_URL = ''; // enlace de pago de Lemon Squeezy (pendiente: se pone al activar el cobro)
+const CHECKOUT_URL = ''; // enlace de pago del proveedor (pendiente: se elige y se pone al activar el cobro)
 // Condiciones de reutilización del Ministerio (aviso legal de transportes.gob.es): citar la fuente con esta
 // fórmula y la fecha de la última actualización, sin insinuar que el Ministerio participa o patrocina la app.
 const ORIGEN_DATOS = 'Origen de los datos: Ministerio de Transportes y Movilidad Sostenible';
@@ -1021,7 +1021,7 @@ function tarjetaAcceso() {
 /**
  * Antes de pagar (spec 006): el cliente pide empezar ya y reconoce que pierde el derecho de desistimiento
  * (art. 103.m del TRLGDCU, contenido digital). Sin marcar las dos casillas no se puede ir al pago.
- * La aceptación viaja al pedido de Lemon Squeezy (custom data) y queda guardada con la compra.
+ * La aceptación viaja al pedido del proveedor de pago (datos personalizados) y queda guardada con la compra.
  */
 function pantallaComprar() {
   pararTimer();
@@ -1059,7 +1059,7 @@ function pantallaComprar() {
           h('strong', {}, 'pierdo el derecho de desistimiento de 14 días'), '.')),
       CHECKOUT_URL ? null : aviso('info', 'El pago todavía no está disponible.'),
       btnPagar,
-      h('p', { class: 'muted small' }, 'El pago lo gestiona Lemon Squeezy, que cobra el IVA y te envía la factura por correo.')));
+      h('p', { class: 'muted small' }, 'El pago lo gestiona un proveedor de pagos externo, que te envía el recibo por correo. Test CAP no ve ni guarda los datos de tu tarjeta.')));
 }
 
 /** Texto del acceso del usuario, para Mi cuenta. */

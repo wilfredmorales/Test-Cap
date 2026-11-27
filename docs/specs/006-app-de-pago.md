@@ -1,4 +1,4 @@
-# Spec 006 · App de pago (pago único por periodo, Lemon Squeezy)
+# Spec 006 · App de pago (pago único por periodo)
 
 Estado: **aprobada (27-11-2026)** · Fase A (acceso por el admin, sin cobro) implementada · Fase B (Lemon Squeezy) pendiente del alta fiscal
 
@@ -76,3 +76,10 @@ venta y política de privacidad actualizadas, antes de activar el modo real.
    actualización, no desnaturalizar la información y no insinuar que el Ministerio participa o patrocina.
 4. **Alta fiscal** pendiente: hasta entonces `PAGOS_ACTIVOS = false` y el acceso lo da el admin.
 5. Los administradores tienen acceso completo sin pagar.
+
+## 9. Proveedor de pago (27-11-2026)
+
+Lemon Squeezy ya no admite registros nuevos y cierra el 31-03-2027 (dato del titular). La fase B se diseña sin atarse
+a un proveedor: la función del webhook verifica la firma del proveedor elegido y crea la compra con `pedido`,
+`hasta = now() + 6 meses` y la fecha de renuncia al desistimiento. Candidatos, a decidir en febrero de 2027 con el
+alta hecha: Paddle (vendedor registrado, gestiona el IVA), Stripe (más barato, el IVA/OSS lo gestiona el titular).
