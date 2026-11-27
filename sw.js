@@ -1,14 +1,13 @@
 // Service worker: la app funciona sin conexión.
 // - App (HTML/CSS/JS): primero red, para que todos vean la versión nueva en cuanto se publica;
 //   sin conexión, la copia guardada. Iconos, librerías y fuentes: primero caché.
-// - Banco (data/*.json): primero red; sin conexión, la copia guardada.
+// - Banco de preguntas: no pasa por aquí; la app lo guarda en IndexedDB (viene de Supabase, spec 006).
 // - Cuentas (Supabase) y demás servidores: siempre a la red, nunca en caché.
-const CACHE = 'test-cap-v9';
+const CACHE = 'test-cap-v12';
 const APP = [
-  './', 'index.html', 'privacidad.html', 'styles.css', 'app.js', 'manifest.webmanifest',
+  './', 'index.html', 'privacidad.html', 'condiciones.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'vendor/supabase.js', 'vendor/jszip.min.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
-  'data/banco-cap.json', 'data/version.json',
 ];
 const FUENTES = ['fonts.googleapis.com', 'fonts.gstatic.com'];
 
@@ -28,15 +27,6 @@ self.addEventListener('fetch', e => {
   const url = new URL(req.url);
   const propio = url.origin === location.origin;
   if (!propio && !FUENTES.includes(url.hostname)) return; // Supabase, GitHub...: directo a la red
-
-  if (propio && url.pathname.includes('/data/')) {
-    const clave = url.pathname.endsWith('version.json') ? 'data/version.json' : 'data/banco-cap.json';
-    e.respondWith(fetch(req).then(res => {
-      if (res.ok) { const copia = res.clone(); caches.open(CACHE).then(c => c.put(clave, copia)); }
-      return res;
-    }).catch(() => caches.match(clave)));
-    return;
-  }
 
   const esApp = propio && (req.mode === 'navigate' || /\.(html|js|css|webmanifest)$/.test(url.pathname) || url.pathname.endsWith('/'))
     && !url.pathname.includes('/vendor/');
