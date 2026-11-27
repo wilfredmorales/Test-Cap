@@ -5,6 +5,7 @@
 do $$
 declare
   a uuid := gen_random_uuid(); b uuid := gen_random_uuid(); adm uuid := gen_random_uuid();
+  s1 uuid := gen_random_uuid(); s2 uuid := gen_random_uuid(); s3 uuid := gen_random_uuid(); s4 uuid := gen_random_uuid();
   rb bigint; n int; ok int := 0; ko int := 0; det text := '';
 begin
   -- Preparación (como sistema). Para probar "último admin", el resto de admins pasan a usuario
@@ -158,6 +159,37 @@ begin
   reset role;
   -- Pedido repetido (webhook duplicado) no crea otra compra
   begin insert into public.compras (user_id, origen, pedido, hasta) values (b, 'pago', 'caducada-1', now() + interval '1 day'); ko := ko + 1; det := det || ' [FALLA S47 pedido duplicado aceptado]'; exception when unique_violation then ok := ok + 1; end;
+
+  -- ===== S48-S56 (migración 010): 1 dispositivo por usuario normal, entra el último =====
+  update public.perfiles set activo = true where id = b;
+  insert into auth.sessions (id, user_id, created_at, updated_at, aal) values (s1, b, now() - interval '1 hour', now() - interval '1 hour', 'aal1');
+  insert into auth.sessions (id, user_id, created_at, updated_at, aal) values (s2, b, now(), now(), 'aal1');
+  select count(*) into n from auth.sessions where user_id = b;
+  if n = 1 and exists (select 1 from auth.sessions where id = s2) then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S48 usuario con ' || n || ' sesiones]'; end if;
+  insert into auth.sessions (id, user_id, created_at, updated_at, aal) values (s3, adm, now(), now(), 'aal2'), (s4, adm, now(), now(), 'aal2');
+  select count(*) into n from auth.sessions where user_id = adm;
+  if n >= 2 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S49 el admin también tiene límite]'; end if;
+  -- B: su sesión vigente sí, la borrada no; no puede usar las funciones de admin
+  perform set_config('request.jwt.claims', json_build_object('sub', b, 'role', 'authenticated', 'session_id', s2)::text, true);
+  set local role authenticated;
+  if public.mi_sesion_vigente() then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S50 sesión vigente no reconocida]'; end if;
+  perform set_config('request.jwt.claims', json_build_object('sub', b, 'role', 'authenticated', 'session_id', s1)::text, true);
+  if not public.mi_sesion_vigente() then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S51 sesión cerrada sigue vigente]'; end if;
+  begin perform public.dispositivos_de(array[adm]); ko := ko + 1; det := det || ' [FALLA S52 usuario ve sesiones ajenas]'; exception when others then ok := ok + 1; end;
+  begin perform public.cerrar_dispositivos_de(adm); ko := ko + 1; det := det || ' [FALLA S53 usuario cierra sesiones ajenas]'; exception when others then ok := ok + 1; end;
+  begin perform 1 from auth.sessions limit 1; ko := ko + 1; det := det || ' [FALLA S54 usuario lee auth.sessions]'; exception when insufficient_privilege then ok := ok + 1; end;
+  reset role;
+  -- Admin sin aal2 no puede; con aal2 ve y cierra las de B, pero no las suyas
+  perform set_config('request.jwt.claims', json_build_object('sub', adm, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+  set local role authenticated;
+  begin perform public.dispositivos_de(array[b]); ko := ko + 1; det := det || ' [FALLA S55 admin aal1 ve sesiones]'; exception when others then ok := ok + 1; end;
+  reset role;
+  perform set_config('request.jwt.claims', json_build_object('sub', adm, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+  set local role authenticated;
+  select count(*) into n from public.dispositivos_de(array[b]);
+  if n = 1 and public.cerrar_dispositivos_de(b) = 1 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S56 admin no ve o no cierra la sesión de B]'; end if;
+  begin perform public.cerrar_dispositivos_de(adm); ko := ko + 1; det := det || ' [FALLA S57 admin cierra su propia sesión desde el panel]'; exception when others then ok := ok + 1; end;
+  reset role;
 
   -- ===== Permisos por defecto (parche H5): una tabla nueva no debe quedar abierta =====
   create table public._prueba_permisos_por_defecto (x int);

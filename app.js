@@ -493,7 +493,8 @@ async function cerrarSesion() {
   pararTimer();
   session = null;
   usuario = null; perfil = null;
-  try { await sb.auth.signOut(); } catch { /* sin conexión: se borra la sesión local igualmente */ }
+  // Solo este dispositivo (por defecto Supabase cierra la sesión en todos).
+  try { await sb.auth.signOut({ scope: 'local' }); } catch { /* sin conexión: se borra la sesión local igualmente */ }
   pantallaLogin({ info: 'Has cerrado sesión.' });
 }
 
@@ -736,6 +737,7 @@ function pantallaLogin({ error, info, email = '' } = {}) {
   zonaAviso,
   campo('email', 'Correo electrónico', { type: 'email', autocomplete: 'email', inputmode: 'email', required: true, value: email }),
   campo('password', 'Contraseña', { type: 'password', autocomplete: 'current-password', required: true }),
+  h('p', { class: 'hint' }, 'Tu cuenta solo puede estar abierta en un dispositivo: al entrar aquí se cierra en el otro.'),
   h('div', { class: 'row spread-row' },
     h('span'),
     h('button', { class: 'btn link', type: 'button', onclick: () => pantallaRecuperar(form.email.value.trim()) }, '¿Has olvidado la contraseña?')),
@@ -879,6 +881,11 @@ async function comprobarCuentaViva() {
       if (e2) return;
       if (!p) motivo = 'Tu cuenta ha sido eliminada.';
       else if (!p.activo) motivo = 'Tu cuenta ha sido desactivada. Contacta con el administrador.';
+      else {
+        // Spec 007: 1 dispositivo por cuenta. Si se ha entrado en otro, esta sesión ya no existe.
+        const { data: vigente, error: e3 } = await sb.rpc('mi_sesion_vigente');
+        if (!e3 && vigente === false) motivo = MOTIVO_OTRO_DISPOSITIVO;
+      }
     }
     if (motivo) { await expulsar(motivo); return; }
     if (Date.now() - ultimaSincronizacion > 30 * 60 * 1000 && (!session || session.terminado)) {
@@ -888,6 +895,9 @@ async function comprobarCuentaViva() {
     }
   } finally { comprobandoCuenta = false; }
 }
+
+const MOTIVO_OTRO_DISPOSITIVO = 'Se ha cerrado la sesión en este dispositivo porque tu cuenta se ha abierto en otro '
+  + '(o la ha cerrado el administrador). Vuelve a iniciar sesión para usarla aquí: se cerrará en el otro.';
 
 async function expulsar(motivo) {
   pararTimer();
@@ -1703,6 +1713,18 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
       if (!prev || !c.hasta || (prev.hasta && new Date(c.hasta) > new Date(prev.hasta))) accesos.set(c.user_id, c);
     }
   }
+  const dispositivos = new Map();
+  if (data.length) {
+    const { data: ds } = await sb.rpc('dispositivos_de', { p_usuarios: data.map(u => u.id) });
+    for (const d of ds || []) { if (!dispositivos.has(d.user_id)) dispositivos.set(d.user_id, []); dispositivos.get(d.user_id).push(d); }
+  }
+  const textoDispositivoDe = u => {
+    const ds = dispositivos.get(u.id) || [];
+    if (!ds.length) return 'Sin sesión abierta';
+    const d = ds[0];
+    const extra = ds.length > 1 ? ` (+${ds.length - 1})` : '';
+    return `Sesión abierta: ${resumirNavegador(d.navegador)} · activo ${fechaES(d.ultima_actividad, true)}${extra}`;
+  };
   const textoAccesoDe = u => {
     if (u.rol === 'admin') return 'Acceso completo (admin)';
     const c = accesos.get(u.id);
@@ -1721,7 +1743,8 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
       h('div', { class: 'user-main' },
         h('div', { class: 'user-name' }, u.nombre || 'Sin nombre', yo ? h('span', { class: 'muted small' }, ' (tú)') : null),
         h('div', { class: 'muted small ellipsis' }, u.email),
-        h('div', { class: 'muted small' }, `Alta ${fechaES(u.creado)} · último acceso ${fechaES(u.ultimo_acceso)}`)),
+        h('div', { class: 'muted small' }, `Alta ${fechaES(u.creado)} · último acceso ${fechaES(u.ultimo_acceso)}`),
+        h('div', { class: 'muted small' }, textoDispositivoDe(u))),
       h('div', { class: 'user-tags' },
         h('span', { class: 'pill ' + (u.rol === 'admin' ? 'pill-admin' : '') }, u.rol === 'admin' ? 'Admin' : 'Usuario'),
         h('span', { class: 'pill ' + (u.activo ? 'pill-ok' : 'pill-bad') }, u.activo ? 'Activo' : 'Desactivado'),
@@ -1740,6 +1763,15 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
             toast('Acceso quitado.'); adminUsuarios(cont, { q, pagina });
           },
         }, 'Quitar acceso'),
+        yo || !(dispositivos.get(u.id) || []).length ? null : h('button', {
+          class: 'btn sm', type: 'button',
+          onclick: async () => {
+            if (!(await confirmar(`¿Cerrar la sesión de ${u.email}? Tendrá que volver a iniciar sesión (su cuenta sigue activa).`, 'Cerrar sesión'))) return;
+            const { error: e } = await sb.rpc('cerrar_dispositivos_de', { p_usuario: u.id });
+            if (e) return toast(traducirError(e));
+            toast('Sesión cerrada. Saldrá de la app en unos minutos.'); adminUsuarios(cont, { q, pagina });
+          },
+        }, 'Cerrar su sesión'),
         h('button', {
           class: 'btn sm', type: 'button', disabled: yo,
           onclick: () => accion(u.rol === 'admin' ? `¿Quitar el rol de administrador a ${u.email}?` : `¿Hacer administrador a ${u.email}? Podrá gestionar usuarios.`,
@@ -1785,6 +1817,15 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
     h('div', { class: 'row end' },
       h('button', { class: 'btn', type: 'button', disabled: pagina === 0, onclick: () => adminUsuarios(cont, { q, pagina: pagina - 1 }) }, 'Anterior'),
       h('button', { class: 'btn', type: 'button', disabled: pagina + 1 >= paginas, onclick: () => adminUsuarios(cont, { q, pagina: pagina + 1 }) }, 'Siguiente')));
+}
+
+/** Resumen legible del navegador de una sesión (sin IP ni datos identificativos). */
+function resumirNavegador(ua = '') {
+  const so = /android/i.test(ua) ? 'Android' : /iphone|ipad|ipod/i.test(ua) ? 'iPhone/iPad'
+    : /windows/i.test(ua) ? 'Windows' : /mac os/i.test(ua) ? 'Mac' : /linux/i.test(ua) ? 'Linux' : 'Dispositivo';
+  const app = /; wv\)/.test(ua) ? 'app instalada (APK)' : /edg\//i.test(ua) ? 'Edge' : /firefox/i.test(ua) ? 'Firefox'
+    : /chrome|crios/i.test(ua) ? 'Chrome' : /safari/i.test(ua) ? 'Safari' : 'navegador';
+  return `${so} · ${app}`;
 }
 
 /** Dar o cambiar el acceso completo de un usuario (spec 006). Revoca los accesos anteriores y crea uno nuevo. */
@@ -2009,7 +2050,7 @@ async function init() {
   });
   sb.auth.onAuthStateChange((evento, s) => {
     if (evento === 'PASSWORD_RECOVERY') { enRecuperacion = true; setTimeout(irANuevaClave, 0); }
-    if (evento === 'SIGNED_OUT' && usuario) { usuario = null; perfil = null; setTimeout(() => pantallaLogin({ info: 'Tu sesión ha terminado.' }), 0); }
+    if (evento === 'SIGNED_OUT' && usuario) { usuario = null; perfil = null; setTimeout(() => pantallaLogin({ info: `Tu sesión ha terminado. ${MOTIVO_OTRO_DISPOSITIVO}` }), 0); }
     if (evento === 'TOKEN_REFRESHED' && s && usuario) vaciarCola();
   });
 

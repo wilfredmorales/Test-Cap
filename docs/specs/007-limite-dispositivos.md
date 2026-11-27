@@ -1,6 +1,6 @@
 # Spec 007 · Límite de dispositivos por usuario
 
-Estado: **modificada por el titular, pendiente de aprobación final**
+Estado: **aprobada e implementada (27-11-2026)**
 
 ## 1. Objetivo
 
