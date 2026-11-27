@@ -117,6 +117,48 @@ begin
   begin delete from auth.users where id = adm; ko := ko + 1; det := det || ' [FALLA S35 se borró la cuenta del último admin (008)]';
   exception when check_violation then ok := ok + 1; end;
 
+  -- ===== S36-S47 (migración 009): acceso por periodo y banco privado =====
+  -- B (usuario normal, activo) sin compras
+  perform set_config('request.jwt.claims', json_build_object('sub', b, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  select count(*) into n from public.banco_completo; if n = 0 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S36 sin pagar lee el banco completo]'; end if;
+  select count(*) into n from public.banco_muestra where activo; if n = 1 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S37 sin pagar no ve la muestra]'; end if;
+  if not (public.mi_acceso() ->> 'completo')::boolean then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S38 mi_acceso da acceso sin compra]'; end if;
+  begin insert into public.compras (user_id, origen, creado_por) values (b, 'admin', b); ko := ko + 1; det := det || ' [FALLA S39 usuario se regala acceso]'; exception when others then ok := ok + 1; end;
+  begin insert into public.compras (user_id, origen, pedido, hasta) values (b, 'pago', 'falso', now() + interval '1 year'); ko := ko + 1; det := det || ' [FALLA S40 usuario inventa un pago]'; exception when others then ok := ok + 1; end;
+  begin perform public.publicar_banco('{"version":"aaaaaaaaaaaa"}'::jsonb); ko := ko + 1; det := det || ' [FALLA S41 usuario publica banco]'; exception when others then ok := ok + 1; end;
+  begin update public.banco_muestra set datos = '{}'::jsonb; get diagnostics n = row_count; if n = 0 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S42 usuario cambia la muestra]'; end if; exception when others then ok := ok + 1; end;
+  reset role;
+  -- Anónimo no ve ni la muestra
+  set local role anon;
+  begin perform 1 from public.banco_muestra limit 1; ko := ko + 1; det := det || ' [FALLA S43 anon lee la muestra]'; exception when insufficient_privilege then ok := ok + 1; end;
+  reset role;
+  -- El admin (aal2) da acceso a B
+  perform set_config('request.jwt.claims', json_build_object('sub', adm, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+  set local role authenticated;
+  insert into public.compras (user_id, origen, hasta, nota, creado_por) values (b, 'admin', now() + interval '6 months', 'prueba', adm);
+  reset role;
+  perform set_config('request.jwt.claims', json_build_object('sub', b, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  select count(*) into n from public.banco_completo where activo; if n = 1 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S44 con acceso no ve el banco completo]'; end if;
+  reset role;
+  -- El admin quita el acceso
+  perform set_config('request.jwt.claims', json_build_object('sub', adm, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+  set local role authenticated;
+  update public.compras set estado = 'revocada' where user_id = b and estado = 'activa';
+  reset role;
+  perform set_config('request.jwt.claims', json_build_object('sub', b, 'role', 'authenticated')::text, true);
+  set local role authenticated;
+  select count(*) into n from public.banco_completo; if n = 0 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S45 acceso revocado sigue viendo el banco]'; end if;
+  reset role;
+  -- Compra caducada no da acceso
+  insert into public.compras (user_id, origen, pedido, desde, hasta) values (b, 'pago', 'caducada-1', now() - interval '2 days', now() - interval '1 day');
+  set local role authenticated;
+  select count(*) into n from public.banco_completo; if n = 0 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S46 compra caducada da acceso]'; end if;
+  reset role;
+  -- Pedido repetido (webhook duplicado) no crea otra compra
+  begin insert into public.compras (user_id, origen, pedido, hasta) values (b, 'pago', 'caducada-1', now() + interval '1 day'); ko := ko + 1; det := det || ' [FALLA S47 pedido duplicado aceptado]'; exception when unique_violation then ok := ok + 1; end;
+
   -- ===== Permisos por defecto (parche H5): una tabla nueva no debe quedar abierta =====
   create table public._prueba_permisos_por_defecto (x int);
   if has_table_privilege('anon', 'public._prueba_permisos_por_defecto', 'select') then

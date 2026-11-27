@@ -16,9 +16,10 @@ const URL_APP = 'https://wilfredmorales.github.io/Test-Cap/';
 // Fuente pública de las preguntas (se enlaza en el aviso de app no oficial).
 const URL_FUENTE_PREGUNTAS = 'https://www.transportes.gob.es/transporte-terrestre/examenes-y-formacion/examenes-de-formacion-de-conductores-profesionales-cap';
 // En la app instalada (APK) las actualizaciones del banco se buscan en GitHub.
-// El APK lee el banco de la propia web (GitHub Pages): sigue a la rama que publique Pages, sin nombres de rama aquí.
-const DATOS_REMOTOS = URL_APP + 'data/';
-const SUBIR_ZIP_URL = 'https://github.com/wilfredmorales/Test-Cap/upload/main/fuentes';
+// Spec 006: el banco completo solo lo descarga quien tiene acceso (pago o concedido por el admin);
+// el resto usa la muestra gratuita. Mientras no haya cobro, el acceso lo da el administrador.
+const PAGOS_ACTIVOS = false;
+const CONTACTO = 'testcap.app.sup@gmail.com';
 
 const TIPOS = {
   mercancias: { nombre: 'Mercancías', icono: 'camion', obligatorias: ['1', '2'], especifica: '2', complementarias: ['4', '4-5'] },
@@ -34,7 +35,6 @@ const MFA_OBLIGATORIA_ADMIN = true;
 // Supabase lo exige solo cuando se activa en Authentication → Attack Protection (con la Secret Key).
 const TURNSTILE_SITEKEY = '0x4AAAAAAGUf7tAYLDHNa4Ul';
 
-const urlDatos = archivo => (window.Capacitor ? DATOS_REMOTOS : 'data/') + archivo;
 const redirectApp = () =>
   (!window.Capacitor && /^https?:$/.test(location.protocol) && !/^(localhost|127\.)/.test(location.hostname))
     ? location.origin + location.pathname : URL_APP;
@@ -244,14 +244,57 @@ async function idbSet(key, value) {
 
 function usarBanco(b) { banco = b; porCodigo = new Map(b.preguntas.map(q => [q.c, q])); }
 
-async function cargarBanco() {
-  const guardado = await idbGet('banco');
-  if (guardado && guardado.preguntas) { usarBanco(guardado); return; }
-  const res = await fetch('data/banco-cap.json');
-  if (!res.ok) throw new Error('No se pudo cargar el banco (' + res.status + ')');
-  const b = await res.json();
-  usarBanco(b);
-  idbSet('banco', b);
+let acceso = null;          // { completo, hasta, sin_caducidad } del usuario de la sesión
+let ultimaSincronizacion = 0;
+
+/**
+ * Elige y actualiza el banco del dispositivo según el acceso del usuario (spec 006).
+ * - Con acceso: banco completo (Supabase, tabla banco_completo). Sin acceso: la muestra gratuita.
+ * - Sin conexión: usa la copia guardada y el último acceso conocido (caduca en su fecha).
+ */
+async function sincronizarBanco({ silencioso = true } = {}) {
+  let acc = null;
+  if (navigator.onLine && sb) {
+    try { const { data, error } = await sb.rpc('mi_acceso'); if (!error && data) acc = data; } catch { /* sin red */ }
+  }
+  if (acc) lsSet(clave('cap.acceso'), acc); else acc = lsGet(clave('cap.acceso'), null);
+  const completo = !!acc && acc.completo && (acc.sin_caducidad || !acc.hasta || new Date(acc.hasta) > new Date());
+  acceso = { ...(acc || {}), completo };
+  const tabla = completo ? 'banco_completo' : 'banco_muestra';
+  const claveIdb = completo ? 'banco' : 'banco-muestra';
+  if (!completo) await idbSet('banco', null); // un dispositivo sin acceso no conserva el banco completo
+  let local = await idbGet(claveIdb);
+  if (!local || !local.preguntas) local = null;
+  let mensaje = null;
+  if (navigator.onLine && sb) {
+    try {
+      const { data: v, error } = await sb.from(tabla).select('version').eq('activo', true).maybeSingle();
+      if (error) throw error;
+      const esperada = v && (completo ? v.version : v.version + '-m');
+      if (v && (!local || local.version !== esperada)) {
+        const { data: fila, error: e2 } = await sb.from(tabla).select('datos').eq('activo', true).single();
+        if (e2) throw e2;
+        const nuevo = fila.datos;
+        if (!nuevo || !Array.isArray(nuevo.preguntas) || !nuevo.preguntas.length) throw new Error('banco recibido incompleto');
+        if (local && !!local.muestra === !!nuevo.muestra) {
+          const diff = compararBancos(local, nuevo);
+          lsSet('cap.banco.ultimoCambio', { fecha: new Date().toISOString(), origen: 'actualización', diff });
+          mensaje = `Banco actualizado: ${resumenCambios(diff)}.`;
+        }
+        await idbSet(claveIdb, nuevo);
+        local = nuevo;
+      } else if (!silencioso) mensaje = 'Ya tienes la última versión del banco.';
+    } catch (e) {
+      if (!local) throw new Error('No se pudieron descargar las preguntas: ' + traducirError(e));
+      if (!silencioso) mensaje = 'No se pudo comprobar si hay preguntas nuevas: ' + traducirError(e);
+    }
+  } else if (!silencioso) mensaje = 'Sin conexión. Inténtalo cuando tengas internet.';
+  if (!local) throw new Error('Necesitas conexión a internet la primera vez para descargar las preguntas.');
+  const cambia = !banco || banco.version !== local.version;
+  usarBanco(local);
+  ultimaSincronizacion = Date.now();
+  if (mensaje && !silencioso) toast(mensaje, 6000);
+  return cambia;
 }
 
 function compararBancos(viejo, nuevo) {
@@ -281,23 +324,6 @@ async function aplicarBanco(nuevo, origen) {
   await idbSet('banco', nuevo);
   lsSet('cap.banco.ultimoCambio', { fecha: new Date().toISOString(), origen, diff });
   return diff;
-}
-
-async function buscarActualizacion({ silencioso = false } = {}) {
-  if (!navigator.onLine) { if (!silencioso) toast('Sin conexión. Inténtalo cuando tengas internet.'); return; }
-  try {
-    const v = await (await fetch(urlDatos('version.json') + '?t=' + Date.now(), { cache: 'no-store' })).json();
-    if (v.version === banco.version) { if (!silencioso) toast('Ya tienes la última versión del banco.'); return; }
-    if (silencioso && banco.fechaFuente && v.fechaFuente && v.fechaFuente < banco.fechaFuente) return;
-    const res = await fetch(urlDatos('banco-cap.json') + '?v=' + encodeURIComponent(v.version), { cache: 'no-store' });
-    const nuevo = await res.json();
-    if (!nuevo.preguntas || nuevo.preguntas.length < 100) throw new Error('banco recibido incompleto');
-    const diff = await aplicarBanco(nuevo, 'actualización');
-    toast(`Banco actualizado: ${resumenCambios(diff)}.`, 6000);
-    if (usuario && (!session || session.terminado)) pantallaInicio();
-  } catch (e) {
-    if (!silencioso) toast('No se pudo actualizar: ' + e.message);
-  }
 }
 
 /* ---------- importar el ZIP oficial de .txt ---------- */
@@ -446,6 +472,14 @@ async function entrarConSesion(s) {
   vaciarCola();
   const guardada = lsGet(LS.session(), null);
   if (guardada && guardada.terminado) lsDel(LS.session());
+  if (!banco) render(h('div', { class: 'auth-form solo' }, h('div', { class: 'auth-card' },
+    h('h2', {}, 'Preparando las preguntas…'), h('p', { class: 'muted' }, 'La primera vez tarda unos segundos.'))));
+  try { await sincronizarBanco(); }
+  catch (e) { return errorFatal('No se pudieron cargar las preguntas', e.message); }
+  const pendiente = lsGet(LS.session(), null);
+  if (pendiente && Array.isArray(pendiente.ids) && pendiente.ids.some(c => !porCodigo.has(c))) {
+    lsDel(LS.session()); // test empezado con preguntas que este banco ya no tiene (p. ej. acceso caducado)
+  }
   pantallaInicio();
 }
 
@@ -630,7 +664,7 @@ function marcoAcceso(titulo, subtitulo, ...contenido) {
         h('p', { class: 'eyebrow' }, 'Certificado de Aptitud Profesional'),
         h('h1', { class: 'auth-claim' }, 'Prepara el CAP con el banco oficial de preguntas'),
         h('ul', { class: 'auth-points' },
-          h('li', {}, `${banco ? banco.total.toLocaleString('es-ES') : '8.655'} preguntas del Ministerio de Transportes`),
+          h('li', {}, `${banco ? (banco.totalCompleto || banco.total).toLocaleString('es-ES') : 'Más de 8.000'} preguntas del banco público del Ministerio`),
           h('li', {}, 'Mercancías y viajeros, con simulacros de 100 preguntas'),
           h('li', {}, 'Tu progreso guardado en todos tus dispositivos'))),
       h('div', { class: 'road', 'aria-hidden': 'true' })),
@@ -842,7 +876,12 @@ async function comprobarCuentaViva() {
       if (!p) motivo = 'Tu cuenta ha sido eliminada.';
       else if (!p.activo) motivo = 'Tu cuenta ha sido desactivada. Contacta con el administrador.';
     }
-    if (motivo) await expulsar(motivo);
+    if (motivo) { await expulsar(motivo); return; }
+    if (Date.now() - ultimaSincronizacion > 30 * 60 * 1000 && (!session || session.terminado)) {
+      const antes = acceso && acceso.completo;
+      const cambia = await sincronizarBanco().catch(() => false);
+      if ((cambia || antes !== (acceso && acceso.completo)) && usuario && (!session || session.terminado)) pantallaInicio();
+    }
   } finally { comprobandoCuenta = false; }
 }
 
@@ -951,6 +990,26 @@ window.addEventListener('online', vaciarCola);
 
 /* ---------- pantalla de inicio ---------- */
 
+/** Aviso de versión de prueba (spec 006). Con acceso completo no se muestra nada. */
+function tarjetaAcceso() {
+  if (!banco || !banco.muestra) return null;
+  const total = (banco.totalCompleto || 0).toLocaleString('es-ES');
+  return h('section', { class: 'card card-accent' },
+    h('div', { class: 'spread' }, h('h2', {}, 'Versión de prueba'), h('span', { class: 'pill' }, `${banco.total} de ${total} preguntas`)),
+    h('p', { class: 'small' }, `Puedes probar todos los modos con ${banco.total} preguntas de muestra. `,
+      PAGOS_ACTIVOS ? 'Desbloquea el banco completo para prepararte de verdad.'
+        : 'Para usar el banco completo, pide acceso al administrador.'),
+    PAGOS_ACTIVOS ? null : h('p', { class: 'muted small' }, 'Escribe a ', h('a', { href: `mailto:${CONTACTO}` }, CONTACTO),
+      ' indicando el correo con el que te registraste.'));
+}
+
+/** Texto del acceso del usuario, para Mi cuenta. */
+function textoAcceso() {
+  if (!acceso || !acceso.completo) return 'Versión de prueba (preguntas de muestra).';
+  if (acceso.sin_caducidad || !acceso.hasta) return 'Acceso completo, sin fecha de caducidad.';
+  return `Acceso completo hasta el ${fechaES(acceso.hasta)}.`;
+}
+
 function pantallaInicio() {
   pararTimer();
   const p = prefs();
@@ -971,6 +1030,7 @@ function pantallaInicio() {
       h('p', { class: 'eyebrow' }, 'Panel de estudio'),
       h('h1', {}, nombre ? `Hola, ${nombre}` : 'Tests del CAP'),
       h('p', { class: 'muted' }, 'Elige el CAP que preparas y el tipo de test.')),
+    tarjetaAcceso(),
     h('section', { class: 'card' }, h('h2', {}, '¿Qué CAP preparas?'), selector),
   ];
 
@@ -1392,6 +1452,9 @@ function pantallaPerfil() {
   render(
     h('div', { class: 'page-head' }, h('p', { class: 'eyebrow' }, 'Cuenta'), h('h1', {}, 'Mi cuenta'),
       h('p', { class: 'muted' }, usuario.email, perfil.rol === 'admin' ? ' · Administrador' : '')),
+    h('section', { class: 'card' }, h('h2', {}, 'Tu acceso'), h('p', {}, textoAcceso()),
+      acceso && acceso.completo ? null : h('p', { class: 'muted small' }, 'Para el banco completo, escribe a ',
+        h('a', { href: `mailto:${CONTACTO}` }, CONTACTO), '.')),
     h('section', { class: 'card' }, h('h2', {}, 'Datos'), f1),
     h('section', { class: 'card' }, h('h2', {}, 'Contraseña'), f2),
     h('section', { class: 'card' }, h('h2', {}, 'Verificación en dos pasos'), zonaMfa),
@@ -1569,6 +1632,23 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
   if (limpio) consulta = consulta.or(`email.ilike.%${limpio}%,nombre.ilike.%${limpio}%`);
   const { data, error, count } = await consulta;
   if (error) { lista.replaceChildren(aviso('error', traducirError(error))); return; }
+  // Accesos vigentes de los usuarios de esta página (spec 006).
+  const accesos = new Map();
+  if (data.length) {
+    const { data: cs } = await sb.from('compras').select('user_id, origen, hasta')
+      .in('user_id', data.map(u => u.id)).eq('estado', 'activa');
+    for (const c of cs || []) {
+      if (c.hasta && new Date(c.hasta) <= new Date()) continue;
+      const prev = accesos.get(c.user_id);
+      if (!prev || !c.hasta || (prev.hasta && new Date(c.hasta) > new Date(prev.hasta))) accesos.set(c.user_id, c);
+    }
+  }
+  const textoAccesoDe = u => {
+    if (u.rol === 'admin') return 'Acceso completo (admin)';
+    const c = accesos.get(u.id);
+    if (!c) return 'Versión de prueba';
+    return c.hasta ? `Acceso hasta ${fechaES(c.hasta)}` : 'Acceso sin caducidad';
+  };
 
   const accion = async (texto, body, peligro = false) => {
     if (!(await confirmar(texto, 'Confirmar', 'Cancelar', peligro))) return;
@@ -1584,8 +1664,22 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
         h('div', { class: 'muted small' }, `Alta ${fechaES(u.creado)} · último acceso ${fechaES(u.ultimo_acceso)}`)),
       h('div', { class: 'user-tags' },
         h('span', { class: 'pill ' + (u.rol === 'admin' ? 'pill-admin' : '') }, u.rol === 'admin' ? 'Admin' : 'Usuario'),
-        h('span', { class: 'pill ' + (u.activo ? 'pill-ok' : 'pill-bad') }, u.activo ? 'Activo' : 'Desactivado')),
+        h('span', { class: 'pill ' + (u.activo ? 'pill-ok' : 'pill-bad') }, u.activo ? 'Activo' : 'Desactivado'),
+        h('span', { class: 'pill ' + (u.rol === 'admin' || accesos.has(u.id) ? 'pill-ok' : '') }, textoAccesoDe(u))),
       h('div', { class: 'user-actions' },
+        u.rol === 'admin' ? null : h('button', {
+          class: 'btn sm primary', type: 'button',
+          onclick: () => darAcceso(u, () => adminUsuarios(cont, { q, pagina })),
+        }, accesos.has(u.id) ? 'Cambiar acceso' : 'Dar acceso'),
+        u.rol === 'admin' || !accesos.has(u.id) ? null : h('button', {
+          class: 'btn sm', type: 'button',
+          onclick: async () => {
+            if (!(await confirmar(`¿Quitar el acceso completo a ${u.email}? Volverá a la versión de prueba (conserva sus resultados).`, 'Quitar acceso', 'Cancelar', true))) return;
+            const { error: e } = await sb.from('compras').update({ estado: 'revocada' }).eq('user_id', u.id).eq('estado', 'activa');
+            if (e) return toast(traducirError(e));
+            toast('Acceso quitado.'); adminUsuarios(cont, { q, pagina });
+          },
+        }, 'Quitar acceso'),
         h('button', {
           class: 'btn sm', type: 'button', disabled: yo,
           onclick: () => accion(u.rol === 'admin' ? `¿Quitar el rol de administrador a ${u.email}?` : `¿Hacer administrador a ${u.email}? Podrá gestionar usuarios.`,
@@ -1633,6 +1727,42 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
       h('button', { class: 'btn', type: 'button', disabled: pagina + 1 >= paginas, onclick: () => adminUsuarios(cont, { q, pagina: pagina + 1 }) }, 'Siguiente')));
 }
 
+/** Dar o cambiar el acceso completo de un usuario (spec 006). Revoca los accesos anteriores y crea uno nuevo. */
+function darAcceso(u, alTerminar) {
+  const sel = h('select', { id: 'acceso-plazo' },
+    h('option', { value: '1' }, '1 mes'), h('option', { value: '3' }, '3 meses'),
+    h('option', { value: '6', selected: true }, '6 meses'), h('option', { value: '12' }, '12 meses'),
+    h('option', { value: '0' }, 'Sin caducidad'));
+  const nota = h('input', { id: 'acceso-nota', type: 'text', maxlength: 200, placeholder: 'Opcional: motivo, pago en mano…' });
+  const btnOk = h('button', { class: 'btn primary', type: 'button' }, 'Dar acceso');
+  const cerrar = () => capa.remove();
+  btnOk.addEventListener('click', async () => {
+    const meses = Number(sel.value);
+    let hasta = null;
+    if (meses) { const d = new Date(); d.setMonth(d.getMonth() + meses); hasta = d.toISOString(); }
+    botonCargando(btnOk, true, 'Guardando…');
+    const { error: e1 } = await sb.from('compras').update({ estado: 'revocada' })
+      .eq('user_id', u.id).eq('estado', 'activa').eq('origen', 'admin');
+    const { error: e2 } = e1 ? { error: e1 } : await sb.from('compras').insert({
+      user_id: u.id, origen: 'admin', hasta, nota: nota.value.trim() || null, creado_por: usuario.id,
+    });
+    if (e2) { botonCargando(btnOk, false); return toast(traducirError(e2), 7000); }
+    cerrar();
+    toast(meses ? `Acceso completo hasta el ${fechaES(hasta)}.` : 'Acceso completo sin caducidad.');
+    alTerminar();
+  });
+  const capa = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' },
+    h('div', { class: 'card modal-card' },
+      h('h2', {}, 'Dar acceso completo'),
+      h('p', { class: 'muted small' }, u.email),
+      h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Durante'), h('span', { class: 'field-input' }, sel)),
+      h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Nota'), h('span', { class: 'field-input' }, nota)),
+      h('p', { class: 'muted small' }, 'Lo verá la próxima vez que abra la app (o en menos de 30 minutos si ya la tiene abierta).'),
+      h('div', { class: 'row end' }, h('button', { class: 'btn', type: 'button', onclick: cerrar }, 'Cancelar'), btnOk)));
+  document.body.append(capa);
+  sel.focus();
+}
+
 async function adminResultados(cont) {
   cont.replaceChildren(h('p', { class: 'muted' }, 'Cargando…'));
   const { data, error } = await sb.from('resultados')
@@ -1658,15 +1788,6 @@ function pedirTexto(mensaje, esperado) {
   });
 }
 
-function archivoBase64(file) {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result).split(',')[1] || '');
-    r.onerror = () => reject(r.error);
-    r.readAsDataURL(file);
-  });
-}
-
 async function llamarFuncion(nombre, body) {
   const { data, error } = await sb.functions.invoke(nombre, { body });
   if (error) {
@@ -1677,11 +1798,7 @@ async function llamarFuncion(nombre, body) {
   return data;
 }
 
-const ESTADO_VERSION = { publicada: ['pill-ok', 'Publicada'], publicando: ['pill-admin', 'Publicando…'], fallida: ['pill-bad', 'Fallida'] };
-
-let sondeoBanco = null;
 async function adminBanco(cont) {
-  clearTimeout(sondeoBanco);
   const zonaCandidato = h('div');
   const zonaVersiones = h('div', {}, h('p', { class: 'muted' }, 'Cargando versiones…'));
   const input = h('input', {
@@ -1708,14 +1825,13 @@ async function adminBanco(cont) {
       if (!ok) return;
       botonCargando(btnPub, true, 'Publicando…');
       try {
-        await llamarFuncion('publicar-banco', {
-          accion: 'publicar', zip: await archivoBase64(file), version: nuevo.version,
-          total: nuevo.total, fechaFuente: nuevo.fechaFuente, cambios: diff,
-        });
-        toast('Banco enviado. GitHub lo publicará en unos minutos.', 6000);
+        const { data: r, error } = await sb.rpc('publicar_banco', { p_banco: nuevo });
+        if (error) throw error;
+        toast(`Publicado: ${r.total.toLocaleString('es-ES')} preguntas (muestra gratuita: ${r.muestra}). Los usuarios lo reciben al abrir la app.`, 7000);
         zonaCandidato.replaceChildren();
-        cargarVersiones();
-      } catch (err) { toast(err.message, 8000); botonCargando(btnPub, false); }
+        await sincronizarBanco();
+        adminBanco(cont);
+      } catch (err) { toast(traducirError(err), 8000); botonCargando(btnPub, false); }
     });
     zonaCandidato.replaceChildren(h('section', { class: 'card card-accent' },
       h('div', { class: 'spread' }, h('h2', {}, 'ZIP validado'), h('span', { class: 'pill pill-ok' }, 'Sin errores')),
@@ -1733,54 +1849,43 @@ async function adminBanco(cont) {
   }
 
   async function cargarVersiones() {
-    clearTimeout(sondeoBanco);
-    let { data, error } = await sb.from('banco_versiones')
-      .select('id, version, archivo, fecha_fuente, total, cambios, estado, mensaje, creado, perfiles(nombre, email)')
-      .order('creado', { ascending: false }).limit(20);
+    const [{ data, error }, { data: guardadas }] = await Promise.all([
+      sb.from('banco_versiones').select('id, version, fecha_fuente, total, mensaje, creado, perfiles(nombre, email)')
+        .order('creado', { ascending: false }).limit(20),
+      sb.from('banco_completo').select('version, activo'),
+    ]);
     if (error) { zonaVersiones.replaceChildren(aviso('error', traducirError(error))); return; }
-    if (data.some(v => v.estado === 'publicando')) {
-      try { await llamarFuncion('publicar-banco', { accion: 'comprobar' }); } catch { /* se reintenta */ }
-      ({ data } = await sb.from('banco_versiones')
-        .select('id, version, archivo, fecha_fuente, total, cambios, estado, mensaje, creado, perfiles(nombre, email)')
-        .order('creado', { ascending: false }).limit(20));
-    }
-    const activa = data.find(v => v.estado === 'publicada');
+    const enServidor = new Map((guardadas || []).map(g => [g.version, g.activo]));
+    const activa = (guardadas || []).find(g => g.activo);
+    let marcada = false;
     zonaVersiones.replaceChildren(
-      h('div', { class: 'spread' }, h('h2', {}, 'Versiones publicadas'), h('span', { class: 'muted small' }, 'Las 20 últimas')),
+      h('div', { class: 'spread' }, h('h2', {}, 'Historial de versiones'), h('span', { class: 'muted small' }, 'Las 20 últimas')),
       ...data.map(v => {
-        const [cls, txt] = ESTADO_VERSION[v.estado] || ['', v.estado];
-        const c = v.cambios || {};
-        const resumen = c.restaurada_desde ? `Vuelta a la versión #${c.restaurada_desde}`
-          : ('nuevas' in c) ? resumenCambios(c) : '';
-        const esActiva = activa && v.id === activa.id;
+        const esActiva = !marcada && activa && v.version === activa.version;
+        if (esActiva) marcada = true;
         return h('div', { class: 'version-row' },
           h('div', { class: 'user-main' },
             h('div', { class: 'user-name' }, `#${v.id} · ${v.total.toLocaleString('es-ES')} preguntas`,
               esActiva ? h('span', { class: 'pill pill-ok', style: 'margin-left:8px' }, 'Activa') : null),
             h('div', { class: 'muted small' }, `Fuente del ${fechaES(v.fecha_fuente)} · versión `, h('span', { class: 'mono' }, v.version)),
             h('div', { class: 'muted small' }, `${fechaES(v.creado, true)}${v.perfiles ? ' · ' + (v.perfiles.nombre || v.perfiles.email) : ''}`),
-            resumen ? h('div', { class: 'small' }, resumen) : null,
             v.mensaje ? h('div', { class: 'muted small' }, v.mensaje) : null),
-          h('div', { class: 'user-tags' }, h('span', { class: 'pill ' + cls }, txt)),
-          v.estado === 'publicada' && !esActiva && activa && v.version !== activa.version
+          !esActiva && enServidor.has(v.version) && (!activa || v.version !== activa.version)
             ? h('div', { class: 'user-actions' }, h('button', {
               class: 'btn sm', type: 'button',
               onclick: async () => {
-                if (!(await confirmar(`¿Volver a la versión #${v.id} (${v.total} preguntas)? Todos los usuarios la recibirán en unos minutos.`, 'Volver a esta versión'))) return;
-                try { await llamarFuncion('publicar-banco', { accion: 'activar', id: v.id }); toast('Enviado. GitHub la publicará en unos minutos.'); cargarVersiones(); }
-                catch (err) { toast(err.message, 8000); }
+                if (!(await confirmar(`¿Volver a la versión ${v.version} (${v.total} preguntas)? Los usuarios la recibirán al abrir la app.`, 'Volver a esta versión'))) return;
+                const { error: e } = await sb.rpc('activar_banco', { p_version: v.version });
+                if (e) return toast(traducirError(e), 8000);
+                toast('Versión activada.'); await sincronizarBanco(); adminBanco(cont);
               },
             }, 'Volver a esta versión')) : null);
       }));
-    // Mientras haya una publicación en curso, se comprueba cada 30 s (solo con esta pantalla abierta).
-    if (data.some(v => v.estado === 'publicando') && zonaVersiones.isConnected) {
-      sondeoBanco = setTimeout(() => { if (zonaVersiones.isConnected) cargarVersiones(); }, 30000);
-    }
   }
 
   const btnAct = h('button', {
     class: 'btn', type: 'button',
-    onclick: async () => { botonCargando(btnAct, true, 'Buscando…'); await buscarActualizacion(); botonCargando(btnAct, false); adminBanco(cont); },
+    onclick: async () => { botonCargando(btnAct, true, 'Buscando…'); await sincronizarBanco({ silencioso: false }).catch(e => toast(e.message)); botonCargando(btnAct, false); adminBanco(cont); },
   }, 'Actualizar este dispositivo');
 
   cont.replaceChildren(
@@ -1796,7 +1901,7 @@ async function adminBanco(cont) {
       h('ol', { class: 'steps' },
         h('li', {}, 'Descarga el ZIP de preguntas en .txt que publica el Ministerio.'),
         h('li', {}, 'Súbelo aquí: la app comprueba todas las preguntas y te enseña qué cambia.'),
-        h('li', {}, 'Pulsa "Publicar para todos". En unos minutos todos los usuarios lo reciben al abrir la app.')),
+        h('li', {}, 'Pulsa "Publicar para todos". Se guarda al momento y cada usuario lo recibe al abrir la app. La muestra gratuita se genera sola.')),
       h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => input.click() }, 'Subir ZIP'), input)),
     zonaCandidato,
     h('section', { class: 'card' }, zonaVersiones));
@@ -1831,7 +1936,6 @@ async function init() {
       navigator.serviceWorker.register('sw.js').catch(() => {});
     }
   } catch { /* sin modo offline */ }
-  try { await cargarBanco(); } catch (e) { return errorFatal('No se pudo cargar el banco', e.message); }
   if (!window.supabase) return errorFatal('No se pudo iniciar', 'Falta la librería de cuentas. Recarga la página.');
 
   // Errores que vuelven en el enlace del correo (caducado, ya usado...)
@@ -1858,7 +1962,6 @@ async function init() {
   if (data.session && lsGet('cap.claveInvitacionPendiente', null) === data.session.user.id) { pantallaNuevaClave(true); return; }
   if (data.session) await entrarConSesion(data.session);
   else pantallaLogin({ error: errorEnlace ? traducirError({ message: errorEnlace }) : null });
-  buscarActualizacion({ silencioso: true });
 }
 
 document.addEventListener('DOMContentLoaded', init);
