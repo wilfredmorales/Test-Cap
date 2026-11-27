@@ -20,6 +20,12 @@ const URL_FUENTE_PREGUNTAS = 'https://www.transportes.gob.es/transporte-terrestr
 // el resto usa la muestra gratuita. Mientras no haya cobro, el acceso lo da el administrador.
 const PAGOS_ACTIVOS = false;
 const CONTACTO = 'testcap.app.sup@gmail.com';
+const PRECIO_TEXTO = '12 €';
+const MESES_ACCESO = 6;
+const CHECKOUT_URL = ''; // enlace de pago de Lemon Squeezy (pendiente: se pone al activar el cobro)
+// Condiciones de reutilización del Ministerio (aviso legal de transportes.gob.es): citar la fuente con esta
+// fórmula y la fecha de la última actualización, sin insinuar que el Ministerio participa o patrocina la app.
+const ORIGEN_DATOS = 'Origen de los datos: Ministerio de Transportes y Movilidad Sostenible';
 
 const TIPOS = {
   mercancias: { nombre: 'Mercancías', icono: 'camion', obligatorias: ['1', '2'], especifica: '2', complementarias: ['4', '4-5'] },
@@ -674,9 +680,7 @@ function marcoAcceso(titulo, subtitulo, ...contenido) {
         subtitulo ? h('p', { class: 'muted' }, subtitulo) : null,
         ...contenido,
         // Play Store (política de información gubernamental): dejar claro que no es una app oficial.
-        h('p', { class: 'aviso-legal small muted' },
-          'App independiente, sin relación con el Ministerio de Transportes ni con la DGT. Las preguntas proceden del ',
-          h('a', { href: URL_FUENTE_PREGUNTAS, target: '_blank', rel: 'noopener' }, 'banco público del Ministerio'), '.'))));
+        avisoOrigen())));
 }
 
 function aviso(tipo, texto) { return texto ? h('div', { class: `alert ${tipo}`, role: tipo === 'error' ? 'alert' : 'status' }, texto) : null; }
@@ -990,6 +994,14 @@ window.addEventListener('online', vaciarCola);
 
 /* ---------- pantalla de inicio ---------- */
 
+/** Cita de la fuente exigida por el Ministerio y aviso de app no oficial (Play Store). */
+function avisoOrigen() {
+  const fecha = banco && banco.fechaFuente ? ` Última actualización de los datos: ${fechaES(banco.fechaFuente)}.` : '';
+  return h('p', { class: 'aviso-legal small muted' },
+    `${ORIGEN_DATOS} (`, h('a', { href: URL_FUENTE_PREGUNTAS, target: '_blank', rel: 'noopener' }, 'banco público de preguntas del CAP'),
+    `).${fecha} Test CAP es una app independiente: el Ministerio no participa en ella, ni la patrocina ni la respalda.`);
+}
+
 /** Aviso de versión de prueba (spec 006). Con acceso completo no se muestra nada. */
 function tarjetaAcceso() {
   if (!banco || !banco.muestra) return null;
@@ -999,8 +1011,55 @@ function tarjetaAcceso() {
     h('p', { class: 'small' }, `Puedes probar todos los modos con ${banco.total} preguntas de muestra. `,
       PAGOS_ACTIVOS ? 'Desbloquea el banco completo para prepararte de verdad.'
         : 'Para usar el banco completo, pide acceso al administrador.'),
-    PAGOS_ACTIVOS ? null : h('p', { class: 'muted small' }, 'Escribe a ', h('a', { href: `mailto:${CONTACTO}` }, CONTACTO),
-      ' indicando el correo con el que te registraste.'));
+    PAGOS_ACTIVOS
+      ? h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'button', onclick: () => irA(pantallaComprar) },
+        `Desbloquear por ${PRECIO_TEXTO} (${MESES_ACCESO} meses)`))
+      : h('p', { class: 'muted small' }, 'Escribe a ', h('a', { href: `mailto:${CONTACTO}` }, CONTACTO),
+        ' indicando el correo con el que te registraste.'));
+}
+
+/**
+ * Antes de pagar (spec 006): el cliente pide empezar ya y reconoce que pierde el derecho de desistimiento
+ * (art. 103.m del TRLGDCU, contenido digital). Sin marcar las dos casillas no se puede ir al pago.
+ * La aceptación viaja al pedido de Lemon Squeezy (custom data) y queda guardada con la compra.
+ */
+function pantallaComprar() {
+  pararTimer();
+  const condiciones = h('input', { type: 'checkbox', id: 'acepto-condiciones' });
+  const renuncia = h('input', { type: 'checkbox', id: 'acepto-renuncia' });
+  const btnPagar = h('button', { class: 'btn primary block', type: 'button', disabled: true }, `Pagar ${PRECIO_TEXTO}`);
+  const actualizar = () => { btnPagar.disabled = !(condiciones.checked && renuncia.checked && CHECKOUT_URL); };
+  condiciones.addEventListener('change', actualizar);
+  renuncia.addEventListener('change', actualizar);
+  btnPagar.addEventListener('click', () => {
+    if (btnPagar.disabled) return;
+    const u = new URL(CHECKOUT_URL);
+    u.searchParams.set('checkout[email]', usuario.email);
+    u.searchParams.set('checkout[custom][user_id]', usuario.id);
+    u.searchParams.set('checkout[custom][renuncia_desistimiento]', new Date().toISOString());
+    window.open(u.toString(), '_blank', 'noopener');
+    toast('Cuando termines el pago, vuelve a la app: el acceso se activa solo en unos segundos.', 8000);
+  });
+  render(
+    h('div', { class: 'page-head' }, h('p', { class: 'eyebrow' }, 'Acceso completo'),
+      h('h1', {}, `${PRECIO_TEXTO} · ${MESES_ACCESO} meses`),
+      h('p', { class: 'muted' }, 'Un solo pago. No es una suscripción: no se renueva ni se cobra otra vez.')),
+    h('section', { class: 'card' }, h('h2', {}, 'Qué incluye'),
+      h('ul', { class: 'steps' },
+        h('li', {}, `Las ${(banco && banco.totalCompleto ? banco.totalCompleto : 8655).toLocaleString('es-ES')} preguntas del banco, de mercancías y de viajeros.`),
+        h('li', {}, 'Simulacros, examen de ampliación, práctica por temas y repaso de falladas.'),
+        h('li', {}, 'Las actualizaciones del banco durante esos meses.'),
+        h('li', {}, 'Tus resultados guardados en todos tus dispositivos.'))),
+    h('section', { class: 'card' }, h('h2', {}, 'Antes de pagar'),
+      h('label', { class: 'check' }, condiciones,
+        h('span', { class: 'small' }, 'He leído y acepto las ', h('a', { href: 'condiciones.html', target: '_blank', rel: 'noopener' }, 'condiciones de compra'),
+          ' y la ', h('a', { href: 'privacidad.html', target: '_blank', rel: 'noopener' }, 'política de privacidad'), '.')),
+      h('label', { class: 'check' }, renuncia,
+        h('span', { class: 'small' }, 'Pido acceder al contenido digital de inmediato y acepto que, al empezar, ',
+          h('strong', {}, 'pierdo el derecho de desistimiento de 14 días'), '.')),
+      CHECKOUT_URL ? null : aviso('info', 'El pago todavía no está disponible.'),
+      btnPagar,
+      h('p', { class: 'muted small' }, 'El pago lo gestiona Lemon Squeezy, que cobra el IVA y te envía la factura por correo.')));
 }
 
 /** Texto del acceso del usuario, para Mi cuenta. */
@@ -1068,6 +1127,7 @@ function pantallaInicio() {
   }
 
   nodos.push(tarjetaInstalar());
+  nodos.push(avisoOrigen());
   render(...nodos);
 }
 

@@ -1,6 +1,6 @@
 # Spec 006 · App de pago (pago único por periodo, Lemon Squeezy)
 
-Estado: **borrador, pendiente de aprobación**
+Estado: **aprobada (27-11-2026)** · Fase A (acceso por el admin, sin cobro) implementada · Fase B (Lemon Squeezy) pendiente del alta fiscal
 
 ## 1. Objetivo
 
@@ -64,11 +64,15 @@ y el workflow `actualizar-banco`.
 Cupones, suscripciones, facturas propias, Play Store (exigiría Google Play Billing). Siguiente hito: condiciones de
 venta y política de privacidad actualizadas, antes de activar el modo real.
 
-## 8. Preguntas abiertas (decide la persona)
+## 8. Decisiones (27-11-2026)
 
-1. **Precio** y **periodo** (recomendado: 6 meses).
-2. **Derecho de desistimiento** (14 días): para contenido digital se pierde si el cliente consiente empezar ya y lo
-   reconoce. Hay que pedirlo con una casilla antes de pagar. ¿Aceptas ese texto o prefieres devolver el dinero en 14 días?
-3. **Aviso legal del Ministerio**: comprobar que permite la reutilización comercial. Sin eso, no se activa el cobro.
-4. **Alta fiscal** (autónomo o similar): confírmalo con un gestor antes de cobrar en real.
-5. Los usuarios que ya existen (tú y testcap): admins, acceso completo sin pagar.
+1. **12 € por 6 meses**, pago único.
+2. **Desistimiento**: no se puede acortar a 3 días (el mínimo legal son 14). Antes de pagar, dos casillas
+   obligatorias: condiciones de compra y "pido acceder ya y acepto perder el derecho de desistimiento" (art. 103.m
+   TRLGDCU). La fecha de esa aceptación viaja en `custom_data` al pedido; en la fase B se guarda en `compras`
+   (columna nueva) y se confirma en el recibo de Lemon Squeezy.
+3. **Aviso legal del Ministerio** (leído el 27-11): permite la reutilización comercial. Condiciones que se cumplen:
+   citar "Origen de los datos: Ministerio de Transportes y Movilidad Sostenible", mostrar la fecha de la última
+   actualización, no desnaturalizar la información y no insinuar que el Ministerio participa o patrocina.
+4. **Alta fiscal** pendiente: hasta entonces `PAGOS_ACTIVOS = false` y el acceso lo da el admin.
+5. Los administradores tienen acceso completo sin pagar.

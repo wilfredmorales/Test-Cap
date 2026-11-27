@@ -39,7 +39,7 @@ CARACTERÍSTICAS
 • Modo oscuro.
 
 AVISO
-Test CAP es una aplicación independiente. No tiene relación con el Ministerio de Transportes, la DGT ni ningún organismo público, ni los representa. Las preguntas proceden del banco público que publica el Ministerio de Transportes en:
+Origen de los datos: Ministerio de Transportes y Movilidad Sostenible. Test CAP es una aplicación independiente: el Ministerio no participa en ella, ni la patrocina ni la respalda. La fecha de la última actualización de los datos se muestra en la app. Banco público de preguntas:
 https://www.transportes.gob.es/transporte-terrestre/examenes-y-formacion/examenes-de-formacion-de-conductores-profesionales-cap
 
 Privacidad: https://wilfredmorales.github.io/Test-Cap/privacidad.html
