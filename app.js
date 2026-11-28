@@ -34,8 +34,10 @@ const TIPOS = {
 const MODOS = { examen: 'Simulacro', ampliacion: 'Ampliación', temas: 'Práctica por temas', falladas: 'Repaso de falladas' };
 const PUNTUACION_DEFECTO = { correcta: 1, incorrecta: -0.5, blanco: 0, aprobado: 50 };
 
-// Fase B de la verificación en dos pasos (spec 003): el panel exige una sesión verificada (aal2).
-const MFA_OBLIGATORIA_ADMIN = true;
+// Spec 008: la verificación en dos pasos es obligatoria solo para los administradores principales.
+const esAdmin = () => !!perfil && perfil.rol === 'admin';
+const esPrincipal = () => esAdmin() && perfil.principal === true;
+const nombreRol = () => esPrincipal() ? 'Administrador principal' : esAdmin() ? 'Administrador' : '';
 
 // Captcha anti-bots (Cloudflare Turnstile) en registro, acceso, recuperación y baja. La Site Key es pública.
 // Supabase lo exige solo cuando se activa en Authentication → Attack Protection (con la Secret Key).
@@ -441,7 +443,7 @@ function claveSegura(p) {
 async function cargarPerfil() {
   const cache = lsGet(LS.perfil(), null);
   try {
-    const { data, error } = await sb.from('perfiles').select('email, nombre, rol, activo').eq('id', usuario.id).single();
+    const { data, error } = await sb.from('perfiles').select('email, nombre, rol, activo, principal').eq('id', usuario.id).single();
     if (error) throw error;
     perfil = data;
     lsSet(LS.perfil(), data);
@@ -552,12 +554,12 @@ async function seccionMfa(zona) {
   zona.replaceChildren(h('p', { class: 'muted small' }, 'Comprobando…'));
   let f;
   try { f = await factoresTotp(); } catch (e) { zona.replaceChildren(aviso('error', traducirError(e))); return; }
-  const esAdmin = perfil && perfil.rol === 'admin';
+  const admin = esAdmin();
   if (f.verificados.length) {
     const factor = f.verificados[0];
     const btn = h('button', { class: 'btn danger', type: 'button' }, 'Desactivar');
     btn.addEventListener('click', async () => {
-      const texto = esAdmin && MFA_OBLIGATORIA_ADMIN
+      const texto = esPrincipal()
         ? '¿Desactivar la verificación en dos pasos? Perderás el acceso al panel de administración hasta que la vuelvas a activar.'
         : '¿Desactivar la verificación en dos pasos? Tu cuenta quedará protegida solo con la contraseña.';
       if (!(await confirmar(texto, 'Desactivar', 'Cancelar', true))) return;
@@ -576,7 +578,7 @@ async function seccionMfa(zona) {
     return;
   }
   // Solo los administradores pueden activarla; a un usuario normal sin verificación no se le muestra.
-  if (!esAdmin) { const tarjeta = zona.closest('section'); if (tarjeta) tarjeta.remove(); return; }
+  if (!admin) { const tarjeta = zona.closest('section'); if (tarjeta) tarjeta.remove(); return; }
   const btn = h('button', { class: 'btn primary', type: 'button' }, 'Activar');
   btn.addEventListener('click', () => activarMfa(zona, f.todos));
   zona.replaceChildren(
@@ -745,8 +747,7 @@ function pantallaLogin({ error, info, email = '' } = {}) {
 
   render(marcoAcceso('Iniciar sesión', 'Entra con tu cuenta para hacer tests y guardar tu progreso.',
     form,
-    h('p', { class: 'auth-alt' }, '¿No tienes cuenta? ',
-      h('button', { class: 'btn link', type: 'button', onclick: () => pantallaRegistro(form.email.value.trim()) }, 'Crear cuenta')),
+    h('p', { class: 'auth-alt' }, '¿No tienes cuenta? Se entra solo por invitación: pídesela a tu administrador.'),
     h('p', { class: 'auth-alt small' }, h('a', { href: 'privacidad.html' }, 'Política de privacidad'))));
 }
 
@@ -875,7 +876,10 @@ async function comprobarCuentaViva() {
     if (error) {
       // Sin conexión o fallo del servidor: no se expulsa a nadie por eso.
       if (![401, 403, 404].includes(error.status) && !/not exist|not found|banned/i.test(error.message || '')) return;
-      motivo = 'Tu cuenta ya no está disponible. Si crees que es un error, contacta con el administrador.';
+      // Sesión borrada (otro dispositivo o cierre por el admin) frente a cuenta eliminada o desactivada.
+      motivo = (error.code === 'session_not_found' || /session not found/i.test(error.message || ''))
+        ? MOTIVO_OTRO_DISPOSITIVO
+        : 'Tu cuenta ya no está disponible. Si crees que es un error, contacta con el administrador.';
     } else {
       const { data: p, error: e2 } = await sb.from('perfiles').select('activo').eq('id', usuario.id).maybeSingle();
       if (e2) return;
@@ -926,11 +930,11 @@ function pintarCabecera() {
     h('div', { class: 'menu-head' },
       h('strong', {}, perfil.nombre || 'Sin nombre'),
       h('span', { class: 'muted small' }, usuario.email),
-      perfil.rol === 'admin' ? h('span', { class: 'pill pill-admin' }, 'Administrador') : null),
+      esAdmin() ? h('span', { class: 'pill pill-admin' }, nombreRol()) : null),
     h('button', { type: 'button', role: 'menuitem', onclick: () => irA(pantallaInicio) }, icono('examen'), 'Tests'),
     h('button', { type: 'button', role: 'menuitem', onclick: () => irA(pantallaHistorial) }, icono('historial'), 'Mi historial'),
     h('button', { type: 'button', role: 'menuitem', onclick: () => irA(pantallaPerfil) }, icono('perfil'), 'Mi cuenta'),
-    perfil.rol === 'admin' ? h('button', { type: 'button', role: 'menuitem', onclick: () => irA(() => pantallaAdmin('resumen')) }, icono('usuarios'), 'Administración') : null,
+    esAdmin() ? h('button', { type: 'button', role: 'menuitem', onclick: () => irA(() => pantallaAdmin('resumen')) }, icono('usuarios'), 'Administración') : null,
     h('hr'),
     h('button', { type: 'button', role: 'menuitem', class: 'menu-danger', onclick: () => irA(cerrarSesion) }, icono('salir'), 'Cerrar sesión'));
   const boton = h('button', {
@@ -1521,7 +1525,7 @@ function pantallaPerfil() {
 
   render(
     h('div', { class: 'page-head' }, h('p', { class: 'eyebrow' }, 'Cuenta'), h('h1', {}, 'Mi cuenta'),
-      h('p', { class: 'muted' }, usuario.email, perfil.rol === 'admin' ? ' · Administrador' : '')),
+      h('p', { class: 'muted' }, usuario.email, esAdmin() ? ` · ${nombreRol()}` : '')),
     h('section', { class: 'card' }, h('h2', {}, 'Tu acceso'), h('p', {}, textoAcceso()),
       acceso && acceso.completo ? null : h('p', { class: 'muted small' }, 'Para el banco completo, escribe a ',
         h('a', { href: `mailto:${CONTACTO}` }, CONTACTO), '.')),
@@ -1600,8 +1604,8 @@ function mostrarEnlace(titulo, explicacion, enlace) {
   document.body.append(capa);
 }
 
-async function pedirEnlace(email, nombre = '') {
-  const r = await llamarAdmin({ accion: 'enlace', email, nombre, redirectTo: redirectApp() });
+async function pedirEnlace(email, nombre = '', nota = '') {
+  const r = await llamarAdmin({ accion: 'enlace', email, nombre, nota, redirectTo: redirectApp() });
   if (r.tipo === 'invite') {
     mostrarEnlace('Enlace de invitación', `Al abrirlo, ${email} creará su contraseña y entrará en la app. No se ha enviado ningún correo.`, r.enlace);
   } else {
@@ -1614,8 +1618,12 @@ async function pedirEnlace(email, nombre = '') {
 const llamarAdmin = body => llamarFuncion('admin-usuarios', body);
 
 function pantallaAdmin(pestana = 'resumen') {
-  if (!perfil || perfil.rol !== 'admin') return pantallaInicio();
-  const tabs = { resumen: ['grafico', 'Resumen'], usuarios: ['usuarios', 'Usuarios'], resultados: ['historial', 'Resultados'], banco: ['banco', 'Banco de preguntas'] };
+  if (!esAdmin()) return pantallaInicio();
+  const tabs = esPrincipal()
+    ? { resumen: ['grafico', 'Resumen'], altas: ['perfil', 'Altas nuevas'], admins: ['usuarios', 'Administradores'],
+      usuarios: ['usuarios', 'Usuarios'], resultados: ['historial', 'Resultados'], banco: ['banco', 'Banco de preguntas'] }
+    : { resumen: ['grafico', 'Resumen'], usuarios: ['usuarios', 'Mis usuarios'], resultados: ['historial', 'Resultados'] };
+  if (!tabs[pestana]) pestana = 'resumen';
   const cont = h('div');
   const zonaMfa = h('div');
   render(
@@ -1629,15 +1637,14 @@ function pantallaAdmin(pestana = 'resumen') {
   nivelVerificacion().then(aal => {
     if (!zonaMfa.isConnected) return;
     const verificada = aal.currentLevel === 'aal2';
-    if (!verificada) {
-      zonaMfa.replaceChildren(h('div', { class: 'alert ' + (MFA_OBLIGATORIA_ADMIN ? 'error' : 'info'), style: 'margin-bottom:16px' },
-        MFA_OBLIGATORIA_ADMIN
-          ? 'El panel de administración exige la verificación en dos pasos. Actívala en Mi cuenta y vuelve a entrar.'
-          : 'Protege el panel: activa la verificación en dos pasos en Mi cuenta. Pronto será obligatoria para administradores.',
+    if (!verificada && esPrincipal()) {
+      zonaMfa.replaceChildren(h('div', { class: 'alert error', style: 'margin-bottom:16px' },
+        'El panel del administrador principal exige la verificación en dos pasos. Actívala en Mi cuenta y vuelve a entrar.',
         ' ', h('button', { class: 'btn link', type: 'button', onclick: pantallaPerfil }, 'Ir a Mi cuenta')));
-      if (MFA_OBLIGATORIA_ADMIN) { cont.replaceChildren(); return; }
+      cont.replaceChildren(); return;
     }
-    ({ resumen: adminResumen, usuarios: adminUsuarios, resultados: adminResultados, banco: adminBanco })[pestana](cont);
+    ({ resumen: adminResumen, altas: adminAltas, admins: adminAdmins, usuarios: adminUsuarios,
+      resultados: adminResultados, banco: adminBanco })[pestana](cont);
   });
 }
 
@@ -1647,12 +1654,15 @@ async function adminResumen(cont) {
   if (error) { cont.replaceChildren(aviso('error', traducirError(error))); return; }
   const s = data || {};
   const stat = (n, l, cls = '') => h('div', { class: 'stat ' + cls }, h('div', { class: 'stat-num' }, (n ?? '—').toLocaleString('es-ES')), h('div', { class: 'stat-label' }, l));
-  cont.replaceChildren(
+  cont.replaceChildren(...[
     h('section', { class: 'stats' },
-      stat(s.usuarios, 'Usuarios registrados'), stat(s.usuarios_activos, 'Cuentas activas', 'ok'),
+      stat(s.usuarios, esPrincipal() ? 'Usuarios registrados' : 'Cuentas (tú y tus invitados)'), stat(s.usuarios_activos, 'Cuentas activas', 'ok'),
       stat(s.nuevos_7d, 'Nuevos esta semana'), stat(s.activos_7d, 'Han hecho tests esta semana'),
       stat(s.tests_total, 'Tests terminados'), stat(s.tests_7d, 'Tests esta semana'),
-      stat(s.aprobados_pct == null ? '—' : `${fmt(s.aprobados_pct)}%`, 'Simulacros aprobados'), stat(s.admins, 'Administradores')));
+      stat(s.aprobados_pct == null ? '—' : `${fmt(s.aprobados_pct)}%`, 'Simulacros aprobados'),
+      esPrincipal() ? stat(s.admins, 'Administradores') : null),
+    esPrincipal() ? null : h('p', { class: 'muted small' }, 'Datos tuyos y de los usuarios que has invitado.'),
+  ].filter(Boolean));
 }
 
 async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
@@ -1661,6 +1671,9 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
   const lista = h('div', {}, h('p', { class: 'muted' }, 'Cargando…'));
   const invEmail = h('input', { id: 'inv-email', type: 'email', placeholder: 'correo@ejemplo.com', autocomplete: 'off' });
   const invNombre = h('input', { id: 'inv-nombre', type: 'text', placeholder: 'Nombre', maxlength: 80 });
+  const invNota = h('input', { id: 'inv-nota', type: 'text', maxlength: 300,
+    placeholder: esPrincipal() ? 'Nota (opcional)' : '¿Quién es? Lo verá el administrador principal' });
+  const zonaTope = h('p', { class: 'muted small' });
   const btnInv = h('button', { class: 'btn', type: 'submit' }, 'Enviar invitación');
   cont.replaceChildren(
     h('form', {
@@ -1668,21 +1681,28 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
     }, h('span', { class: 'field-input grow' }, buscar), h('button', { class: 'btn primary', type: 'submit' }, 'Buscar')),
     h('section', { class: 'card' }, lista),
     h('section', { class: 'card' }, h('h2', {}, 'Invitar a un usuario'),
-      h('p', { class: 'muted small' }, 'Envía la invitación por correo o copia un enlace para mandarlo tú (no gasta el cupo de correos).'),
+      h('p', { class: 'muted small' }, 'Envía la invitación por correo o copia un enlace para mandarlo tú (no gasta el cupo de correos). '
+        + 'La persona invitada entra en la versión de prueba hasta que le des acceso.'),
+      zonaTope,
       h('form', {
         class: 'toolbar', onsubmit: async e => {
           e.preventDefault();
           const email = invEmail.value.trim().toLowerCase();
           if (!correoValido(email)) return toast('Escribe un correo válido.');
           botonCargando(btnInv, true, 'Enviando…');
-          try { await llamarAdmin({ accion: 'invitar', email, nombre: invNombre.value.trim(), redirectTo: redirectApp() }); toast(`Invitación enviada a ${email}.`); invEmail.value = ''; invNombre.value = ''; }
+          try {
+            await llamarAdmin({ accion: 'invitar', email, nombre: invNombre.value.trim(), nota: invNota.value.trim(), redirectTo: redirectApp() });
+            toast(`Invitación enviada a ${email}.`); invEmail.value = ''; invNombre.value = ''; invNota.value = '';
+            adminUsuarios(cont, { q, pagina });
+          }
           catch (err) {
             const txt = traducirError(err);
             toast(/correos en la última hora/.test(txt) ? `${txt} Mientras tanto, usa "Copiar enlace".` : txt, 7000);
           }
           botonCargando(btnInv, false);
         },
-      }, h('span', { class: 'field-input grow' }, invEmail), h('span', { class: 'field-input grow' }, invNombre), btnInv,
+      }, h('span', { class: 'field-input grow' }, invEmail), h('span', { class: 'field-input grow' }, invNombre),
+      h('span', { class: 'field-input grow' }, invNota), btnInv,
       h('button', {
         class: 'btn', type: 'button', id: 'btn-copiar-enlace',
         onclick: async ev => {
@@ -1690,13 +1710,13 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
           if (!correoValido(email)) return toast('Escribe un correo válido.');
           botonCargando(ev.currentTarget, true, 'Generando…');
           const b = ev.currentTarget;
-          try { await pedirEnlace(email, invNombre.value.trim()); invEmail.value = ''; invNombre.value = ''; }
+          try { await pedirEnlace(email, invNombre.value.trim(), invNota.value.trim()); invEmail.value = ''; invNombre.value = ''; invNota.value = ''; }
           catch (err) { toast(traducirError(err), 7000); }
           botonCargando(b, false);
         },
       }, 'Copiar enlace'))));
 
-  let consulta = sb.from('perfiles').select('id, email, nombre, rol, activo, creado, ultimo_acceso', { count: 'exact' })
+  let consulta = sb.from('perfiles').select('id, email, nombre, rol, activo, creado, ultimo_acceso, principal, invitado_por, revision', { count: 'exact' })
     .order('creado', { ascending: false }).range(pagina * POR_PAGINA, pagina * POR_PAGINA + POR_PAGINA - 1);
   const limpio = q.replace(/[%,()*\\]/g, ' ').trim();
   if (limpio) consulta = consulta.or(`email.ilike.%${limpio}%,nombre.ilike.%${limpio}%`);
@@ -1725,6 +1745,23 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
     const extra = ds.length > 1 ? ` (+${ds.length - 1})` : '';
     return `Sesión abierta: ${resumirNavegador(d.navegador)} · activo ${fechaES(d.ultima_actividad, true)}${extra}`;
   };
+  const nombresAdmin = new Map();
+  if (esPrincipal()) {
+    const { data: admins } = await sb.from('perfiles').select('id, email, nombre').eq('rol', 'admin');
+    for (const a of admins || []) nombresAdmin.set(a.id, a.nombre || a.email);
+  } else {
+    // Tope de invitados en prueba (spec 008): lo comprueba también el servidor.
+    const { data: mios } = await sb.from('perfiles').select('id').eq('invitado_por', usuario.id).eq('activo', true);
+    const ids = (mios || []).map(u => u.id);
+    let conAcceso = 0;
+    if (ids.length) {
+      const { data: cs } = await sb.from('compras').select('user_id, hasta').in('user_id', ids).eq('estado', 'activa');
+      conAcceso = new Set((cs || []).filter(c => !c.hasta || new Date(c.hasta) > new Date()).map(c => c.user_id)).size;
+    }
+    const enPrueba = ids.length - conAcceso;
+    zonaTope.replaceChildren(`Invitados en versión de prueba: ${enPrueba} de 10. `,
+      enPrueba >= 10 ? h('strong', {}, 'Has llegado al máximo: da acceso o desactiva alguno para invitar a más.') : '');
+  }
   const textoAccesoDe = u => {
     if (u.rol === 'admin') return 'Acceso completo (admin)';
     const c = accesos.get(u.id);
@@ -1744,9 +1781,13 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
         h('div', { class: 'user-name' }, u.nombre || 'Sin nombre', yo ? h('span', { class: 'muted small' }, ' (tú)') : null),
         h('div', { class: 'muted small ellipsis' }, u.email),
         h('div', { class: 'muted small' }, `Alta ${fechaES(u.creado)} · último acceso ${fechaES(u.ultimo_acceso)}`),
-        h('div', { class: 'muted small' }, textoDispositivoDe(u))),
+        h('div', { class: 'muted small' }, textoDispositivoDe(u)),
+        esPrincipal() && u.rol === 'usuario'
+          ? h('div', { class: 'muted small' }, `Invitado por: ${u.invitado_por ? (nombresAdmin.get(u.invitado_por) || 'un administrador') : 'nadie (registro antiguo)'}`)
+          : null),
       h('div', { class: 'user-tags' },
-        h('span', { class: 'pill ' + (u.rol === 'admin' ? 'pill-admin' : '') }, u.rol === 'admin' ? 'Admin' : 'Usuario'),
+        h('span', { class: 'pill ' + (u.rol === 'admin' ? 'pill-admin' : '') }, u.principal ? 'Principal' : u.rol === 'admin' ? 'Admin' : 'Usuario'),
+        u.revision === 'pendiente' && esPrincipal() ? h('span', { class: 'pill pill-bad' }, 'Sin revisar') : null,
         h('span', { class: 'pill ' + (u.activo ? 'pill-ok' : 'pill-bad') }, u.activo ? 'Activo' : 'Desactivado'),
         h('span', { class: 'pill ' + (u.rol === 'admin' || accesos.has(u.id) ? 'pill-ok' : '') }, textoAccesoDe(u))),
       h('div', { class: 'user-actions' },
@@ -1772,13 +1813,15 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
             toast('Sesión cerrada. Saldrá de la app en unos minutos.'); adminUsuarios(cont, { q, pagina });
           },
         }, 'Cerrar su sesión'),
-        h('button', {
+        !esPrincipal() || u.principal ? null : h('button', {
           class: 'btn sm', type: 'button', disabled: yo,
-          onclick: () => accion(u.rol === 'admin' ? `¿Quitar el rol de administrador a ${u.email}?` : `¿Hacer administrador a ${u.email}? Podrá gestionar usuarios.`,
-            { accion: 'rol', id: u.id, rol: u.rol === 'admin' ? 'usuario' : 'admin' }),
+          onclick: () => accion(u.rol === 'admin'
+            ? `¿Quitar el rol de administrador a ${u.email}? Sus usuarios pasarán a ti.`
+            : `¿Hacer administrador a ${u.email}? Podrá invitar usuarios y gestionar solo a los suyos.`,
+          { accion: 'rol', id: u.id, rol: u.rol === 'admin' ? 'usuario' : 'admin' }),
         }, u.rol === 'admin' ? 'Quitar admin' : 'Hacer admin'),
         h('button', {
-          class: 'btn sm', type: 'button', disabled: yo,
+          class: 'btn sm', type: 'button', disabled: yo || u.principal,
           onclick: () => accion(u.activo ? `¿Desactivar a ${u.email}? No podrá iniciar sesión.` : `¿Reactivar a ${u.email}?`,
             { accion: 'activo', id: u.id, activo: !u.activo }, u.activo),
         }, u.activo ? 'Desactivar' : 'Activar'),
@@ -1800,12 +1843,12 @@ async function adminUsuarios(cont, { q = '', pagina = 0 } = {}) {
             botonCargando(b, false);
           },
         }, 'Copiar enlace de acceso'),
-        h('button', {
+        !esPrincipal() ? null : h('button', {
           class: 'btn sm', type: 'button', disabled: yo,
           onclick: () => accion(`¿Quitar la verificación en dos pasos de ${u.email}? Podrá entrar solo con su contraseña y, si es administrador, tendrá que volver a activarla para usar el panel.`,
             { accion: 'quitar_mfa', id: u.id }, true),
         }, 'Quitar verificación en dos pasos'),
-        h('button', {
+        !esPrincipal() ? null : h('button', {
           class: 'btn sm danger', type: 'button', disabled: yo || u.rol === 'admin',
           onclick: () => accion(`¿Eliminar la cuenta de ${u.email} y todos sus resultados? No se puede deshacer.`, { accion: 'eliminar', id: u.id }, true),
         }, 'Eliminar')));
@@ -1862,6 +1905,110 @@ function darAcceso(u, alTerminar) {
       h('div', { class: 'row end' }, h('button', { class: 'btn', type: 'button', onclick: cerrar }, 'Cancelar'), btnOk)));
   document.body.append(capa);
   sel.focus();
+}
+
+/** Pide una nota opcional. Devuelve el texto ('' si vacío) o null si se cancela. */
+function pedirNota(titulo, mensaje, aceptar, peligro = false) {
+  return new Promise(resolve => {
+    const input = h('textarea', { id: 'nota-texto', rows: 3, maxlength: 300, placeholder: 'Nota (opcional)' });
+    const cerrar = v => { capa.remove(); resolve(v); };
+    const capa = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' },
+      h('div', { class: 'card modal-card' },
+        h('h2', {}, titulo), h('p', { class: 'small' }, mensaje),
+        h('label', { class: 'field' }, h('span', { class: 'field-input' }, input)),
+        h('div', { class: 'row end' },
+          h('button', { class: 'btn', type: 'button', onclick: () => cerrar(null) }, 'Cancelar'),
+          h('button', { class: 'btn ' + (peligro ? 'danger-solid' : 'primary'), type: 'button', onclick: () => cerrar(input.value.trim()) }, aceptar))));
+    document.body.append(capa);
+    input.focus();
+  });
+}
+
+/** Bandeja del principal (spec 008): altas que aún no ha revisado. */
+async function adminAltas(cont) {
+  cont.replaceChildren(h('p', { class: 'muted' }, 'Cargando…'));
+  const { data, error } = await sb.from('perfiles')
+    .select('id, email, nombre, activo, creado, invitado_por, nota_alta')
+    .eq('revision', 'pendiente').order('creado', { ascending: false }).limit(100);
+  if (error) { cont.replaceChildren(aviso('error', traducirError(error))); return; }
+  const ids = [...new Set(data.map(u => u.invitado_por).filter(Boolean))];
+  const admins = new Map();
+  if (ids.length) {
+    const { data: as } = await sb.from('perfiles').select('id, email, nombre').in('id', ids);
+    for (const a of as || []) admins.set(a.id, a.nombre ? `${a.nombre} (${a.email})` : a.email);
+  }
+  const accesos = new Set();
+  if (data.length) {
+    const { data: cs } = await sb.from('compras').select('user_id, hasta').in('user_id', data.map(u => u.id)).eq('estado', 'activa');
+    for (const c of cs || []) if (!c.hasta || new Date(c.hasta) > new Date()) accesos.add(c.user_id);
+  }
+  const recargar = () => adminAltas(cont);
+  const filas = data.map(u => h('div', { class: 'user-row' + (u.activo ? '' : ' inactive') },
+    h('div', { class: 'user-avatar' }, (u.nombre || u.email).slice(0, 1).toUpperCase()),
+    h('div', { class: 'user-main' },
+      h('div', { class: 'user-name' }, u.nombre || 'Sin nombre'),
+      h('div', { class: 'muted small ellipsis' }, u.email),
+      h('div', { class: 'muted small mono' }, `ID ${u.id}`),
+      h('div', { class: 'muted small' }, `Alta ${fechaES(u.creado, true)} · invitado por ${admins.get(u.invitado_por) || 'un administrador principal'}`),
+      u.nota_alta ? h('div', { class: 'small' }, `Nota del administrador: «${u.nota_alta}»`) : h('div', { class: 'muted small' }, 'Sin nota del administrador.')),
+    h('div', { class: 'user-tags' },
+      h('span', { class: 'pill ' + (accesos.has(u.id) ? 'pill-ok' : '') }, accesos.has(u.id) ? 'Con acceso' : 'Versión de prueba'),
+      u.activo ? null : h('span', { class: 'pill pill-bad' }, 'Suspendido')),
+    h('div', { class: 'user-actions' },
+      h('button', {
+        class: 'btn sm primary', type: 'button',
+        onclick: async () => {
+          const nota = await pedirNota('Marcar como revisada', `${u.email} sigue como está. Desaparece de esta bandeja.`, 'Marcar revisada');
+          if (nota === null) return;
+          const { error: e } = await sb.rpc('revisar_alta', { p_usuario: u.id, p_nota: nota });
+          if (e) return toast(traducirError(e));
+          toast('Alta revisada.'); recargar();
+        },
+      }, 'Marcar revisada'),
+      u.activo ? h('button', {
+        class: 'btn sm', type: 'button',
+        onclick: async () => {
+          const nota = await pedirNota('Suspender', `${u.email} saldrá de la app y no podrá entrar hasta que lo reactives (en Usuarios). Explica el motivo:`, 'Suspender', true);
+          if (nota === null) return;
+          try {
+            await llamarAdmin({ accion: 'activo', id: u.id, activo: false, nota });
+            await sb.rpc('revisar_alta', { p_usuario: u.id, p_nota: nota ? `Suspendida: ${nota}` : 'Suspendida' });
+            toast('Cuenta suspendida.'); recargar();
+          } catch (e) { toast(traducirError(e)); }
+        },
+      }, 'Suspender') : null,
+      h('button', {
+        class: 'btn sm danger', type: 'button',
+        onclick: async () => {
+          if (!(await confirmar(`¿Dar de baja a ${u.email}? Se elimina la cuenta y todos sus resultados. No se puede deshacer.`, 'Dar de baja', 'Cancelar', true))) return;
+          try { await llamarAdmin({ accion: 'eliminar', id: u.id }); toast('Cuenta eliminada.'); recargar(); }
+          catch (e) { toast(traducirError(e)); }
+        },
+      }, 'Dar de baja'))));
+  cont.replaceChildren(h('section', { class: 'card' },
+    h('div', { class: 'spread' }, h('h2', {}, `${data.length} altas sin revisar`)),
+    h('p', { class: 'muted small' }, 'Usuarios invitados por los administradores que aún no has revisado. Pueden usar la app mientras tanto '
+      + '(en versión de prueba hasta que su administrador les dé acceso).'),
+    ...(filas.length ? filas : [h('p', { class: 'empty' }, 'No hay altas pendientes.')])));
+}
+
+/** Panel del principal: cada administrador y sus usuarios. */
+async function adminAdmins(cont) {
+  cont.replaceChildren(h('p', { class: 'muted' }, 'Cargando…'));
+  const { data, error } = await sb.rpc('resumen_admins');
+  if (error) { cont.replaceChildren(aviso('error', traducirError(error))); return; }
+  const num = n => h('td', { class: 'num' }, (n || 0).toLocaleString('es-ES'));
+  cont.replaceChildren(h('section', { class: 'card' },
+    h('h2', {}, 'Administradores'),
+    h('p', { class: 'muted small' }, 'Para nombrar uno: Usuarios → "Hacer admin". "Conectados" = activos en los últimos 15 minutos.'),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+      h('thead', {}, h('tr', {}, ...['Administrador', 'Usuarios', 'En prueba', 'Con acceso', 'Desactivados', 'Sin revisar', 'Conectados']
+        .map(t => h('th', {}, t)))),
+      h('tbody', {}, ...data.map(a => h('tr', {},
+        h('td', {}, h('div', {}, a.nombre || a.email), h('div', { class: 'muted small' }, a.email),
+          h('span', { class: 'pill ' + (a.principal ? 'pill-admin' : '') }, a.principal ? 'Principal' : 'Administrador'),
+          a.activo ? null : h('span', { class: 'pill pill-bad' }, 'Desactivado')),
+        num(a.usuarios), num(a.en_prueba), num(a.con_acceso), num(a.desactivados), num(a.sin_revisar), num(a.conectados))))))));
 }
 
 async function adminResultados(cont) {

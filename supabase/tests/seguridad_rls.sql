@@ -6,6 +6,7 @@ do $$
 declare
   a uuid := gen_random_uuid(); b uuid := gen_random_uuid(); adm uuid := gen_random_uuid();
   s1 uuid := gen_random_uuid(); s2 uuid := gen_random_uuid(); s3 uuid := gen_random_uuid(); s4 uuid := gen_random_uuid();
+  sec uuid := gen_random_uuid(); inv uuid := gen_random_uuid(); s5 uuid := gen_random_uuid(); s6 uuid := gen_random_uuid();
   rb bigint; n int; ok int := 0; ko int := 0; det text := '';
 begin
   -- Preparación (como sistema). Para probar "último admin", el resto de admins pasan a usuario
@@ -14,8 +15,8 @@ begin
     (a,   'usuario-a@test.local', '{"nombre":"A","rol":"admin","is_admin":true}', 'authenticated', 'authenticated'),
     (b,   'usuario-b@test.local', '{"nombre":"B"}', 'authenticated', 'authenticated'),
     (adm, 'admin@test.local',     '{"nombre":"Adm"}', 'authenticated', 'authenticated');
-  update public.perfiles set rol = 'admin' where id = adm;
-  update public.perfiles set rol = 'usuario' where rol = 'admin' and id <> adm;
+  update public.perfiles set rol = 'admin', principal = true where id = adm;
+  update public.perfiles set rol = 'usuario', principal = false where rol = 'admin' and id <> adm;
   insert into public.resultados (user_id, tipo, modo, preguntas, correctas, falladas, blanco, puntos, porcentaje, aprobado, id_cliente)
     values (b, 'viajeros', 'examen', 10, 5, 5, 0, 2.5, 25, false, gen_random_uuid()) returning id into rb;
 
@@ -189,6 +190,47 @@ begin
   select count(*) into n from public.dispositivos_de(array[b]);
   if n = 1 and public.cerrar_dispositivos_de(b) = 1 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S56 admin no ve o no cierra la sesión de B]'; end if;
   begin perform public.cerrar_dispositivos_de(adm); ko := ko + 1; det := det || ' [FALLA S57 admin cierra su propia sesión desde el panel]'; exception when others then ok := ok + 1; end;
+  reset role;
+
+  -- ===== S58-S72 (migración 011): administrador secundario con sus invitados =====
+  insert into auth.users (id, email, raw_user_meta_data, aud, role) values
+    (sec, 'secundario@test.local', '{"nombre":"Sec"}', 'authenticated', 'authenticated'),
+    (inv, 'invitado@test.local', '{"nombre":"Inv"}', 'authenticated', 'authenticated');
+  update public.perfiles set rol = 'admin' where id = sec;
+  update public.perfiles set invitado_por = sec, revision = 'pendiente' where id = inv;
+  insert into auth.sessions (id, user_id, created_at, updated_at, aal) values (s5, inv, now(), now(), 'aal1'), (s6, b, now(), now(), 'aal1');
+  perform set_config('request.jwt.claims', json_build_object('sub', sec, 'role', 'authenticated', 'aal', 'aal1')::text, true);
+  set local role authenticated;
+  select count(*) into n from public.perfiles where id in (a, b, adm, sec, inv);
+  if n = 2 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S58 secundario ve ' || n || ' perfiles]'; end if;
+  select count(*) into n from public.resultados where user_id = b;
+  if n = 0 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S59 secundario ve resultados ajenos]'; end if;
+  begin insert into public.compras (user_id, origen, hasta, creado_por) values (inv, 'admin', now() + interval '6 months', sec); ok := ok + 1;
+  exception when others then ko := ko + 1; det := det || ' [FALLA S60 secundario no da acceso a su invitado: ' || sqlerrm || ']'; end;
+  begin insert into public.compras (user_id, origen, hasta, creado_por) values (b, 'admin', now() + interval '6 months', sec); ko := ko + 1; det := det || ' [FALLA S61 secundario da acceso a ajeno]';
+  exception when others then ok := ok + 1; end;
+  begin update public.perfiles set rol = 'admin' where id = inv; ko := ko + 1; det := det || ' [FALLA S62 secundario cambia roles]';
+  exception when others then ok := ok + 1; end;
+  update public.perfiles set activo = false where id = inv; get diagnostics n = row_count;
+  if n = 1 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S63 secundario no desactiva a su invitado]'; end if;
+  update public.perfiles set activo = true where id = inv;
+  update public.perfiles set activo = false where id = b; get diagnostics n = row_count;
+  if n = 0 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S64 secundario desactiva a ajeno]'; end if;
+  begin perform public.publicar_banco('{"version":"aaaaaaaaaaaa"}'::jsonb); ko := ko + 1; det := det || ' [FALLA S65 secundario publica banco]'; exception when others then ok := ok + 1; end;
+  begin perform public.resumen_admins(); ko := ko + 1; det := det || ' [FALLA S66 secundario ve el resumen de admins]'; exception when others then ok := ok + 1; end;
+  begin perform public.revisar_alta(inv, 'x'); ko := ko + 1; det := det || ' [FALLA S67 secundario revisa altas]'; exception when others then ok := ok + 1; end;
+  begin update public.perfiles set invitado_por = null where id = inv; ko := ko + 1; det := det || ' [FALLA S68 secundario cambia invitado_por]'; exception when others then ok := ok + 1; end;
+  begin update public.perfiles set principal = true where id = sec; ko := ko + 1; det := det || ' [FALLA S69 secundario se hace principal]'; exception when others then ok := ok + 1; end;
+  select count(*) into n from public.dispositivos_de(array[b, inv]);
+  if n = 1 then ok := ok + 1; else ko := ko + 1; det := det || ' [FALLA S70 secundario ve ' || n || ' sesiones]'; end if;
+  begin perform public.estadisticas_admin(); ok := ok + 1; exception when others then ko := ko + 1; det := det || ' [FALLA S71 secundario sin aal2 no usa su resumen]'; end;
+  reset role;
+  perform set_config('request.jwt.claims', json_build_object('sub', adm, 'role', 'authenticated', 'aal', 'aal2')::text, true);
+  set local role authenticated;
+  select usuarios into n from public.resumen_admins() where admin_id = sec;
+  perform public.revisar_alta(inv, 'conforme');
+  if n = 1 and (select revision from public.perfiles where id = inv) = 'revisada' then ok := ok + 1;
+  else ko := ko + 1; det := det || ' [FALLA S72 principal no ve o no revisa]'; end if;
   reset role;
 
   -- ===== Permisos por defecto (parche H5): una tabla nueva no debe quedar abierta =====
