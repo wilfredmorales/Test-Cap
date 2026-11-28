@@ -875,7 +875,10 @@ async function comprobarCuentaViva() {
     if (error) {
       // Sin conexión o fallo del servidor: no se expulsa a nadie por eso.
       if (![401, 403, 404].includes(error.status) && !/not exist|not found|banned/i.test(error.message || '')) return;
-      motivo = 'Tu cuenta ya no está disponible. Si crees que es un error, contacta con el administrador.';
+      // Sesión borrada (otro dispositivo o cierre por el admin) frente a cuenta eliminada o desactivada.
+      motivo = (error.code === 'session_not_found' || /session not found/i.test(error.message || ''))
+        ? MOTIVO_OTRO_DISPOSITIVO
+        : 'Tu cuenta ya no está disponible. Si crees que es un error, contacta con el administrador.';
     } else {
       const { data: p, error: e2 } = await sb.from('perfiles').select('activo').eq('id', usuario.id).maybeSingle();
       if (e2) return;
