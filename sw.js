@@ -3,7 +3,7 @@
 //   sin conexión, la copia guardada. Iconos, librerías y fuentes: primero caché.
 // - Banco de preguntas: no pasa por aquí; la app lo guarda en IndexedDB (viene de Supabase, spec 006).
 // - Cuentas (Supabase) y demás servidores: siempre a la red, nunca en caché.
-const CACHE = 'test-cap-v13';
+const CACHE = 'test-cap-v14';
 const APP = [
   './', 'index.html', 'privacidad.html', 'condiciones.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'vendor/supabase.js', 'vendor/jszip.min.js',

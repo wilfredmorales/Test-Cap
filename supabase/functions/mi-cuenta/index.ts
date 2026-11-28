@@ -51,11 +51,11 @@ Deno.serve(async (req) => {
     }
 
     // No dejar el sistema sin administrador.
-    const { data: perfil } = await servicio.from("perfiles").select("rol, activo").eq("id", yo.id).single();
-    if (perfil?.rol === "admin" && perfil.activo) {
+    const { data: perfil } = await servicio.from("perfiles").select("principal, activo").eq("id", yo.id).single();
+    if (perfil?.principal && perfil.activo) {
       const { count } = await servicio.from("perfiles").select("id", { count: "exact", head: true })
-        .eq("rol", "admin").eq("activo", true).neq("id", yo.id);
-      if (!count) return respuesta(400, { error: "Eres el único administrador: nombra a otro antes de eliminar tu cuenta" });
+        .eq("principal", true).eq("activo", true).neq("id", yo.id);
+      if (!count) return respuesta(400, { error: "Eres el único administrador principal: no puedes eliminar tu cuenta" });
     }
 
     // Borra la cuenta; perfil y resultados se borran en cascada.

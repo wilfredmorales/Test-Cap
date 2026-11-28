@@ -1,6 +1,6 @@
 # Spec 008 · Administradores con equipo propio, altas solo por invitación
 
-Estado: **ajustada por el titular (28-11-2026), pendiente de aprobación final**
+Estado: **aprobada e implementada (28-11-2026)**. Avisos del linter de Supabase sobre funciones `security definer` en `public` (cerrar_dispositivos_de, dispositivos_de, mi_sesion_vigente, resumen_admins, revisar_alta): aceptados, cada una comprueba el rol por dentro (pruebas S50-S72).
 
 ## 1. Objetivo
 
